@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# YOLO Model Weights
+*.pt
+*.onnx
+*.engine
+
+# Logs
+logs/
+*.log
+
+# Temp files
+temp/
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Data (test images/videos)
+data/
+
+# Environment
+.env
+.env.*
+!.env.example
