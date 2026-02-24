@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.20
+websockets>=14.0
+ultralytics>=8.3.0
+supervision>=0.25.0
+opencv-python>=4.10.0
+numpy>=1.26.0
+torch>=2.0.0
