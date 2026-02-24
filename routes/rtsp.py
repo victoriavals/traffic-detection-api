@@ -7,11 +7,11 @@ Endpoints:
 - WS   /rtsp/stream  → Real-time annotated frames via WebSocket
 """
 
+import asyncio
 import os
 import time
 import base64
 import json
-from typing import Literal
 
 import cv2
 import numpy as np
@@ -27,8 +27,6 @@ from constant_var import (
     DEFAULT_LINE_END_X,
     DEFAULT_LINE_END_Y,
     CLASS_NAMES,
-    RTSP_DEFAULT_FRAME_COUNT,
-    RTSP_MAX_FRAME_COUNT,
     WEBSOCKET_FPS_LIMIT,
     debug_info,
     debug_error,
@@ -45,6 +43,11 @@ router = APIRouter(prefix="/rtsp", tags=["📡 RTSP Stream"])
 detector: DetectorService = DetectorService()
 annotator: AnnotationService = AnnotationService()
 
+# WebSocket stream stability constants
+_MAX_CONSECUTIVE_FAILURES: int = 30    # tolerate N bad reads before reconnect
+_MAX_RECONNECT_ATTEMPTS: int = 5       # max RTSP reconnect attempts
+_RECONNECT_DELAY_SEC: float = 2.0      # delay between reconnect attempts
+
 
 def _open_rtsp_stream(url: str) -> cv2.VideoCapture:
     """Open RTSP stream with TCP transport for stability.
@@ -58,15 +61,26 @@ def _open_rtsp_stream(url: str) -> cv2.VideoCapture:
     Raises:
         ValueError: If stream cannot be opened.
     """
-    # Set TCP transport for RTSP stability
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-
     cap: cv2.VideoCapture = cv2.VideoCapture(url)
-
     if not cap.isOpened():
         raise ValueError(f"Cannot open RTSP stream: {url}")
-
     return cap
+
+
+def _read_frame_sync(cap: cv2.VideoCapture) -> tuple[bool, np.ndarray | None]:
+    """Read one frame synchronously (intended to run in thread executor).
+
+    Args:
+        cap: Opened VideoCapture object.
+
+    Returns:
+        Tuple of (success, frame).
+    """
+    ret: bool
+    frame: np.ndarray
+    ret, frame = cap.read()
+    return ret, frame if ret else None
 
 
 @router.post(
@@ -75,12 +89,6 @@ def _open_rtsp_stream(url: str) -> cv2.VideoCapture:
     summary="Detect vehicles from RTSP snapshot (JSON)",
     description="""
 Koneksi ke RTSP stream, capture sejumlah frame, proses deteksi + tracking + counting, lalu return hasil JSON.
-
-**Cara kerja:**
-1. Buka koneksi ke RTSP stream via URL yang diberikan
-2. Capture frame sebanyak `frame_count` (default: 150 frame)
-3. Setiap frame: YOLO detection → filter pedestrian → ByteTrack tracking → LineZone counting
-4. Tutup koneksi → return aggregate counting per kelas
 
 **Request body (JSON):**
 ```json
@@ -131,7 +139,6 @@ async def detect_rtsp(request: RTSPRequest) -> RTSPDetectResponse:
             lost_track_buffer=30,
             frame_rate=int(video_fps),
         )
-
         line_start: sv.Point = sv.Point(int(width * lsx), int(height * lsy))
         line_end: sv.Point = sv.Point(int(width * lex), int(height * ley))
         line_zone: sv.LineZone = sv.LineZone(start=line_start, end=line_end)
@@ -146,10 +153,10 @@ async def detect_rtsp(request: RTSPRequest) -> RTSPDetectResponse:
 
         while frame_count < request.frame_count:
             ret: bool
-            frame: np.ndarray
+            frame: np.ndarray | None
             ret, frame = cap.read()
 
-            if not ret:
+            if not ret or frame is None:
                 debug_info("[RTSP/DETECT] Stream ended or broken")
                 break
 
@@ -222,37 +229,25 @@ async def detect_rtsp(request: RTSPRequest) -> RTSPDetectResponse:
 async def stream_rtsp(ws: WebSocket) -> None:
     """WebSocket endpoint for real-time RTSP stream with annotations.
 
-    **Protocol:**
-    1. Client connects ke WebSocket
-    2. Client mengirim JSON config:
-       ```json
-       {
-           "url": "rtsp://user:pass@ip:554/path",
-           "confidence": 0.45,
-           "iou": 0.5,
-           "model_size": "SMALL",
-           "line_config": {
-               "start_x": 0.0, "start_y": 0.15,
-               "end_x": 1.0, "end_y": 0.65
-           }
-       }
-       ```
-    3. Server mulai streaming annotated frames sebagai JSON messages:
-       ```json
-       {
-           "type": "frame",
-           "frame": "<base64 JPEG>",
-           "counts": {"big_vehicle": 0, "car": 5, ...},
-           "fps": 15.2,
-           "frame_number": 100
-       }
-       ```
-    4. Client bisa mengirim `{"action": "stop"}` kapan saja
-    5. Disconnect → cleanup otomatis
+    Stability features:
+    - cap.read() runs in asyncio thread executor (non-blocking, improves FPS)
+    - Frame retry tolerance: tolerates up to _MAX_CONSECUTIVE_FAILURES bad reads
+    - Auto-reconnect: reopens RTSP connection up to _MAX_RECONNECT_ATTEMPTS times
+
+    Protocol:
+    1. Client connects to WebSocket
+    2. Client sends JSON config:
+       {"url": "...", "confidence": 0.45, "iou": 0.5, "model_size": "SMALL",
+        "line_config": {"start_x": 0.0, "start_y": 0.15, "end_x": 1.0, "end_y": 0.65}}
+    3. Server streams annotated frames as JSON:
+       {"type": "frame", "frame": "<base64>", "counts": {...}, "fps": 15.2, "frame_number": 100}
+    4. Client sends {"action": "stop"} to stop
+    5. Disconnect → cleanup automatically
     """
     await ws.accept()
     debug_info("[RTSP/STREAM] WebSocket connected")
 
+    loop = asyncio.get_event_loop()
     cap: cv2.VideoCapture | None = None
 
     try:
@@ -266,15 +261,15 @@ async def stream_rtsp(ws: WebSocket) -> None:
             await ws.close()
             return
 
-        confidence: float = config.get("confidence", DEFAULT_CONFIDENCE)
-        iou_val: float = config.get("iou", DEFAULT_IOU)
-        model_size: str = config.get("model_size", DEFAULT_MODEL_SIZE)
+        confidence: float = float(config.get("confidence", DEFAULT_CONFIDENCE))
+        iou_val: float = float(config.get("iou", DEFAULT_IOU))
+        model_size: str = str(config.get("model_size", DEFAULT_MODEL_SIZE))
 
-        lc: dict = config.get("line_config", {})
-        lsx: float = lc.get("start_x", DEFAULT_LINE_START_X)
-        lsy: float = lc.get("start_y", DEFAULT_LINE_START_Y)
-        lex: float = lc.get("end_x", DEFAULT_LINE_END_X)
-        ley: float = lc.get("end_y", DEFAULT_LINE_END_Y)
+        lc: dict = config.get("line_config") or {}
+        lsx: float = float(lc.get("start_x", DEFAULT_LINE_START_X))
+        lsy: float = float(lc.get("start_y", DEFAULT_LINE_START_Y))
+        lex: float = float(lc.get("end_x", DEFAULT_LINE_END_X))
+        ley: float = float(lc.get("end_y", DEFAULT_LINE_END_Y))
 
         # 2. Open RTSP stream
         debug_info(f"[RTSP/STREAM] Opening: {url}")
@@ -289,12 +284,11 @@ async def stream_rtsp(ws: WebSocket) -> None:
         height: int = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         video_fps: float = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
-        # Setup tracker & line zone
+        # Setup tracker & line zone (persist across reconnects)
         tracker: sv.ByteTrack = sv.ByteTrack(
             lost_track_buffer=30,
             frame_rate=int(video_fps),
         )
-
         line_start: sv.Point = sv.Point(int(width * lsx), int(height * lsy))
         line_end: sv.Point = sv.Point(int(width * lex), int(height * ley))
         line_zone: sv.LineZone = sv.LineZone(start=line_start, end=line_end)
@@ -304,57 +298,102 @@ async def stream_rtsp(ws: WebSocket) -> None:
         }
         counted_ids: set[int] = set()
 
-        # Send stream info
+        # Send initial connection info
         await ws.send_json({
             "type": "info",
-            "message": f"Connected to RTSP stream: {width}x{height} @ {video_fps:.0f} FPS",
+            "message": f"Connected: {width}x{height} @ {video_fps:.0f} FPS",
         })
 
-        # 3. Stream loop
+        # 3. Stream loop variables
         frame_number: int = 0
         fps_start: float = time.time()
         fps_count: int = 0
         display_fps: float = 0.0
-        frame_interval: float = 1.0 / WEBSOCKET_FPS_LIMIT  # Limit FPS for WebSocket
+        consecutive_failures: int = 0
+        frame_skip: int = max(1, int(video_fps / WEBSOCKET_FPS_LIMIT))
 
         while True:
-            # Check for stop command (non-blocking)
+            # --- Check for stop command (non-blocking 1ms timeout) ---
             try:
-                import asyncio
-                msg: str = await asyncio.wait_for(ws.receive_text(), timeout=0.001)
-                msg_data: dict = json.loads(msg)
+                msg_raw: str = await asyncio.wait_for(ws.receive_text(), timeout=0.001)
+                msg_data: dict = json.loads(msg_raw)
                 if msg_data.get("action") == "stop":
                     debug_info("[RTSP/STREAM] Stop requested by client")
                     break
-            except Exception:
-                pass  # No message received, continue
+            except (asyncio.TimeoutError, Exception):
+                pass  # No message, continue
 
+            # --- Read frame in thread executor (non-blocking) ---
             ret: bool
-            frame: np.ndarray
-            ret, frame = cap.read()
+            frame: np.ndarray | None
+            ret, frame = await loop.run_in_executor(None, _read_frame_sync, cap)
 
-            if not ret:
-                await ws.send_json({"type": "error", "message": "RTSP stream ended or broken"})
-                break
+            if not ret or frame is None:
+                consecutive_failures += 1
+                debug_info(
+                    f"[RTSP/STREAM] Frame read failed "
+                    f"({consecutive_failures}/{_MAX_CONSECUTIVE_FAILURES})"
+                )
 
+                if consecutive_failures < _MAX_CONSECUTIVE_FAILURES:
+                    # Tolerate transient failures — skip frame and retry
+                    await asyncio.sleep(0.05)
+                    continue
+
+                # Too many failures → attempt RTSP reconnect
+                debug_info("[RTSP/STREAM] Max failures reached, attempting reconnect...")
+                cap.release()
+                cap = None
+
+                reconnected: bool = False
+                for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
+                    await ws.send_json({
+                        "type": "info",
+                        "message": f"Reconnecting... ({attempt}/{_MAX_RECONNECT_ATTEMPTS})",
+                    })
+                    try:
+                        await asyncio.sleep(_RECONNECT_DELAY_SEC)
+                        cap = _open_rtsp_stream(url)
+                        new_fps: float = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                        frame_skip = max(1, int(new_fps / WEBSOCKET_FPS_LIMIT))
+                        consecutive_failures = 0
+                        reconnected = True
+                        debug_info(f"[RTSP/STREAM] Reconnected (attempt {attempt})")
+                        await ws.send_json({
+                            "type": "info",
+                            "message": "Reconnected to stream",
+                        })
+                        break
+                    except ValueError:
+                        debug_info(f"[RTSP/STREAM] Reconnect attempt {attempt} failed")
+
+                if not reconnected:
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "Stream terputus — gagal reconnect setelah beberapa percobaan",
+                    })
+                    break
+
+                continue  # Restart loop with new cap
+
+            # --- Successful frame read ---
+            consecutive_failures = 0
             frame_number += 1
             fps_count += 1
 
-            # FPS calculation
-            elapsed: float = time.time() - fps_start
-            if elapsed >= 1.0:
-                display_fps = fps_count / elapsed
+            # FPS calculation (update every 1 second)
+            elapsed_fps: float = time.time() - fps_start
+            if elapsed_fps >= 1.0:
+                display_fps = fps_count / elapsed_fps
                 fps_count = 0
                 fps_start = time.time()
 
-            # Skip frames to match FPS limit
-            if frame_number % max(1, int(video_fps / WEBSOCKET_FPS_LIMIT)) != 0:
+            # Skip frames to match WEBSOCKET_FPS_LIMIT
+            if frame_number % frame_skip != 0:
                 continue
 
-            # Detect → filter → track → count
-            detections: sv.Detections = detector.detect(
-                frame, confidence, iou_val, model_size
-            )
+            # --- Detect → filter → track → count ---
+            detections: sv.Detections = detector.detect(frame, confidence, iou_val, model_size)
             detections = filter_pedestrian_on_vehicle(detections)
             detections = tracker.update_with_detections(detections)
 
@@ -368,33 +407,30 @@ async def stream_rtsp(ws: WebSocket) -> None:
                     if t_id in counted_ids:
                         continue
                     counted_ids.add(t_id)
-                    cls_id: int = int(detections.class_id[i])
-                    cls_name: str = CLASS_NAMES.get(cls_id, "unknown")
+                    cls_name: str = CLASS_NAMES.get(int(detections.class_id[i]), "unknown")
                     key: str = cls_name.replace("-", "_")
                     if key in counts:
                         counts[key] += 1
 
-            # Annotate frame
+            # --- Annotate frame ---
             annotated: np.ndarray = annotator.annotate_detections(
                 frame, detections, show_tracker_id=True
             )
             annotator.draw_counting_line(annotated, line_zone)
             annotator.draw_stats_overlay(annotated, counts, display_fps)
 
-            # Encode to base64 JPEG
+            # --- Encode to base64 JPEG ---
             success: bool
             buffer: np.ndarray
             success, buffer = cv2.imencode(
                 ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 70]
             )
-
             if not success:
                 continue
 
             frame_b64: str = base64.b64encode(buffer.tobytes()).decode("utf-8")
-            total: int = sum(counts.values())
 
-            # Send frame message
+            # --- Send frame message ---
             await ws.send_json({
                 "type": "frame",
                 "frame": frame_b64,
@@ -403,7 +439,7 @@ async def stream_rtsp(ws: WebSocket) -> None:
                     "car": counts["car"],
                     "pedestrian": counts["pedestrian"],
                     "two_wheeler": counts["two_wheeler"],
-                    "total": total,
+                    "total": sum(counts.values()),
                 },
                 "fps": round(display_fps, 1),
                 "frame_number": frame_number,
