@@ -264,6 +264,7 @@ async def stream_rtsp(ws: WebSocket) -> None:
         confidence: float = float(config.get("confidence", DEFAULT_CONFIDENCE))
         iou_val: float = float(config.get("iou", DEFAULT_IOU))
         model_size: str = str(config.get("model_size", DEFAULT_MODEL_SIZE))
+        send_frame: bool = bool(config.get("send_frame", True))
 
         lc: dict = config.get("line_config") or {}
         lsx: float = float(lc.get("start_x", DEFAULT_LINE_START_X))
@@ -412,23 +413,22 @@ async def stream_rtsp(ws: WebSocket) -> None:
                     if key in counts:
                         counts[key] += 1
 
-            # --- Annotate frame ---
-            annotated: np.ndarray = annotator.annotate_detections(
-                frame, detections, show_tracker_id=True
-            )
-            annotator.draw_counting_line(annotated, line_zone)
-            annotator.draw_stats_overlay(annotated, counts, display_fps)
+            # --- Annotate frame & encode ---
+            frame_b64: str | None = None
+            if send_frame:
+                annotated: np.ndarray = annotator.annotate_detections(
+                    frame, detections, show_tracker_id=True
+                )
+                annotator.draw_counting_line(annotated, line_zone)
+                annotator.draw_stats_overlay(annotated, counts, display_fps)
 
-            # --- Encode to base64 JPEG ---
-            success: bool
-            buffer: np.ndarray
-            success, buffer = cv2.imencode(
-                ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 70]
-            )
-            if not success:
-                continue
-
-            frame_b64: str = base64.b64encode(buffer.tobytes()).decode("utf-8")
+                success: bool
+                buffer: np.ndarray
+                success, buffer = cv2.imencode(
+                    ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 70]
+                )
+                if success:
+                    frame_b64 = base64.b64encode(buffer.tobytes()).decode("utf-8")
 
             # --- Send frame message ---
             await ws.send_json({
