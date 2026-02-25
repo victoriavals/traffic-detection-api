@@ -22,6 +22,7 @@ from constant_var import TEMP_DIR, debug_info, debug_error
 from services.detector_service import DetectorService
 from routes.image import router as image_router
 from routes.video import router as video_router
+from routes.video_jobs import router as video_jobs_router
 from routes.rtsp import router as rtsp_router
 
 
@@ -134,6 +135,7 @@ app.add_middleware(
 
 app.include_router(image_router)
 app.include_router(video_router)
+app.include_router(video_jobs_router)
 app.include_router(rtsp_router)
 
 
