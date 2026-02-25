@@ -10,6 +10,8 @@ Endpoints:
 import os
 import time
 import uuid
+import subprocess
+import shutil
 from typing import Literal
 
 import cv2
@@ -262,14 +264,11 @@ async def detect_video(
             ),
             video_info=result["video_info"],
             inference_config={
-                "confidence": confidence,
-                "iou": iou,
-                "model_size": model_size,
+                "model": f"YOLOv11{'s' if model_size == 'SMALL' else 'm'}",
                 "device": detector.get_device_info(),
-                "counting_line": {
-                    "start": f"({line_start_x}, {line_start_y})",
-                    "end": f"({line_end_x}, {line_end_y})",
-                },
+                "image_size": 640,
+                "line_start": [line_start_x, line_start_y],
+                "line_end": [line_end_x, line_end_y],
             },
         )
 
@@ -361,8 +360,20 @@ async def annotate_video(
 
         original_name: str = os.path.splitext(file.filename or "video")[0]
 
+        # Re-encode to H.264 for browser playback
+        temp_h264: str = str(TEMP_DIR / f"h264_{uuid.uuid4().hex[:8]}.mp4")
+        if _reencode_to_h264(temp_output, temp_h264):
+            # Use H.264 version; queue original mp4v file for cleanup too
+            serve_path: str = temp_h264
+            cleanup_paths: tuple[str, ...] = (temp_input, temp_output, temp_h264)
+        else:
+            # Fallback: serve original mp4v (download still works)
+            debug_info("[VIDEO/ANNOTATE] H.264 re-encode failed, serving mp4v fallback")
+            serve_path = temp_output
+            cleanup_paths = (temp_input, temp_output)
+
         return FileResponse(
-            path=temp_output,
+            path=serve_path,
             media_type="video/mp4",
             filename=f"annotated_{original_name}.mp4",
             headers={
@@ -370,7 +381,7 @@ async def annotate_video(
                 "X-Frames-Processed": str(result["video_info"]["frames_processed"]),
                 "X-Processing-Time": str(result["video_info"]["processing_time_seconds"]),
             },
-            background=BackgroundTask(_cleanup_files, temp_input, temp_output),
+            background=BackgroundTask(_cleanup_files, *cleanup_paths),
         )
 
     except HTTPException:
@@ -382,6 +393,58 @@ async def annotate_video(
         _safe_remove(temp_input, temp_output)
         debug_error(f"[VIDEO/ANNOTATE] Error: {e}")
         raise HTTPException(status_code=500, detail=f"Video annotation failed: {str(e)}")
+
+
+def _reencode_to_h264(input_path: str, output_path: str) -> bool:
+    """Re-encode video to H.264 using ffmpeg for browser compatibility.
+
+    OpenCV's mp4v codec is not supported by HTML5 <video> tags.
+    This converts to H.264 (libx264) which all modern browsers can play.
+
+    Args:
+        input_path: Path to the mp4v-encoded input video.
+        output_path: Path for the H.264 output video.
+
+    Returns:
+        True if re-encoding succeeded, False otherwise.
+    """
+    ffmpeg_bin: str | None = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        debug_error("[REENCODE] ffmpeg not found in PATH")
+        return False
+
+    cmd: list[str] = [
+        ffmpeg_bin,
+        "-y",                    # overwrite output
+        "-i", input_path,        # input file
+        "-c:v", "libx264",       # H.264 codec
+        "-preset", "fast",       # balance speed/quality
+        "-crf", "23",            # quality (lower = better, 23 is default)
+        "-movflags", "+faststart",  # enable progressive download
+        "-pix_fmt", "yuv420p",   # broad browser compatibility
+        output_path,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minute timeout
+        )
+        if result.returncode != 0:
+            debug_error(f"[REENCODE] ffmpeg failed: {result.stderr[:500]}")
+            return False
+
+        debug_info(f"[REENCODE] Success: {output_path}")
+        return True
+
+    except subprocess.TimeoutExpired:
+        debug_error("[REENCODE] ffmpeg timed out (>600s)")
+        return False
+    except Exception as e:
+        debug_error(f"[REENCODE] Error: {e}")
+        return False
 
 
 def _safe_remove(*paths: str) -> None:
