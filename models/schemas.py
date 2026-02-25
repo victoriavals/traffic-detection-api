@@ -182,3 +182,55 @@ class RTSPStreamMessage(BaseModel):
     fps: Optional[float] = None
     frame_number: Optional[int] = None
     message: Optional[str] = None
+
+
+# =============================================
+# VIDEO JOB MODELS (URL-based async processing)
+# =============================================
+
+class VideoJobRequest(BaseModel):
+    """Request body untuk membuat video processing job dari URL publik.
+
+    Attributes:
+        url: URL publik video (Google Drive, Dropbox, direct link, dll).
+        confidence: Confidence threshold untuk deteksi.
+        iou: IoU threshold untuk NMS.
+        model_size: Ukuran model YOLO.
+        line_start_x: Posisi X awal counting line.
+        line_start_y: Posisi Y awal counting line.
+        line_end_x: Posisi X akhir counting line.
+        line_end_y: Posisi Y akhir counting line.
+    """
+
+    url: str = Field(..., description="Public video URL (Google Drive, Dropbox, direct MP4 link, etc.)")
+    confidence: float = Field(0.45, ge=0.0, le=1.0, description="Detection confidence threshold")
+    iou: float = Field(0.5, ge=0.0, le=1.0, description="IoU threshold for NMS")
+    model_size: Literal["SMALL", "MEDIUM"] = Field("SMALL", description="Model: SMALL (faster) or MEDIUM (more accurate)")
+    line_start_x: float = Field(0.0, ge=0.0, le=1.0)
+    line_start_y: float = Field(0.15, ge=0.0, le=1.0)
+    line_end_x: float = Field(1.0, ge=0.0, le=1.0)
+    line_end_y: float = Field(0.65, ge=0.0, le=1.0)
+
+
+class VideoJobStatus(BaseModel):
+    """Status dan hasil dari video processing job.
+
+    Attributes:
+        job_id: Unique job identifier.
+        status: Status saat ini ('pending', 'downloading', 'processing', 'done', 'error').
+        progress: Persentase penyelesaian (0-100).
+        message: Pesan status terbaru.
+        counts: Hasil counting (tersedia jika status='done').
+        video_info: Informasi video yang diproses.
+        inference_config: Konfigurasi inference yang digunakan.
+        error: Pesan error (tersedia jika status='error').
+    """
+
+    job_id: str
+    status: Literal["pending", "downloading", "processing", "done", "error"]
+    progress: float = Field(0.0, ge=0.0, le=100.0)
+    message: str = ""
+    counts: Optional[ClassCount] = None
+    video_info: Optional[dict] = None
+    inference_config: Optional[dict] = None
+    error: Optional[str] = None
