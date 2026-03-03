@@ -25,7 +25,7 @@ from ultralytics import YOLO
 # VIDEO SOURCE CONFIGURATION
 # =============================================
 # Pilih source yang ingin digunakan:
-# "RTSP"    -> CCTV EZVIZ Real-time (192.168.1.72)
+# "RTSP"    -> CCTV EZVIZ Real-time (192.168.1.140)
 # "ROMLAH1" -> File video data/video-romlah1.mp4
 # "ROMLAH2" -> File video data/test romlah.mp4
 # "YOUTUBE" -> Livestream YouTube
@@ -33,7 +33,7 @@ SOURCE_SELECTION = "RTSP"
 
 # Dictionary Sumber Video
 SOURCES = {
-    "RTSP": "rtsp://admin:1Triliun@192.168.1.72:554/H.264",
+    "RTSP": "rtsp://admin:1Triliun@192.168.1.140:554/H.264",
     "ROMLAH1": "data/video-romlah1.mp4",
     "ROMLAH2": "data/test romlah.mp4",
     "YOUTUBE": "https://www.youtube.com/watch?v=2Xi9VIWiv6A"
