@@ -234,3 +234,49 @@ class VideoJobStatus(BaseModel):
     video_info: Optional[dict] = None
     inference_config: Optional[dict] = None
     error: Optional[str] = None
+
+
+# =============================================
+# EZVIZ CLOUD MODELS
+# =============================================
+
+class EzvizDetectRequest(BaseModel):
+    """Request body untuk EZVIZ cloud detect endpoint.
+
+    Attributes:
+        device_serial: Serial number kamera EZVIZ.
+        channel_no: Channel number kamera (default 1).
+        confidence: Confidence threshold untuk deteksi.
+        iou: IoU threshold untuk NMS.
+        model_size: Ukuran model YOLO.
+        frame_count: Jumlah frame yang akan diproses.
+        line_config: Konfigurasi posisi counting line.
+    """
+
+    device_serial: str = Field(..., description="EZVIZ camera serial number (e.g., 'AB1234567')")
+    channel_no: int = Field(1, ge=1, description="Camera channel number")
+    confidence: float = Field(0.45, ge=0.0, le=1.0, description="Detection confidence threshold")
+    iou: float = Field(0.5, ge=0.0, le=1.0, description="IoU threshold for NMS")
+    model_size: Literal["SMALL", "MEDIUM"] = Field("SMALL", description="Model size")
+    frame_count: int = Field(150, ge=1, le=1000, description="Number of frames to process")
+    line_config: Optional[LineConfig] = Field(None, description="Counting line position config")
+
+
+class EzvizDetectResponse(BaseModel):
+    """Response untuk EZVIZ cloud detect endpoint.
+
+    Attributes:
+        success: Apakah proses berhasil.
+        message: Pesan status.
+        counts: Jumlah kendaraan per kelas.
+        stream_info: Informasi stream.
+        inference_config: Konfigurasi inference.
+        device_info: Informasi device EZVIZ.
+    """
+
+    success: bool
+    message: str
+    counts: ClassCount
+    stream_info: dict
+    inference_config: dict
+    device_info: Optional[dict] = None
