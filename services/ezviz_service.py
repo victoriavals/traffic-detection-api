@@ -25,18 +25,30 @@ class EzvizService:
     """Singleton service for EZVIZ Cloud API interactions.
 
     Manages access token lifecycle and provides methods to
-    retrieve live stream URLs from EZVIZ cloud.
+    retrieve live stream URLs and capture images from EZVIZ cloud.
+    Uses a persistent httpx client for connection pooling (faster requests).
     """
 
     _instance: "EzvizService | None" = None
     _access_token: str = ""
     _token_expire_time: float = 0.0
     _area_domain: str = ""
+    _client: httpx.AsyncClient | None = None
 
     def __new__(cls) -> "EzvizService":
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create persistent httpx client with connection pooling."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                verify=False,
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            )
+        return self._client
 
     def is_configured(self) -> bool:
         """Check if EZVIZ credentials are configured in .env."""
@@ -63,17 +75,17 @@ class EzvizService:
 
         debug_info("[EZVIZ] Requesting new access token...")
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                EZVIZ_TOKEN_URL,
-                data={
-                    "appKey": EZVIZ_APP_KEY,
-                    "appSecret": EZVIZ_APP_SECRET,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            resp.raise_for_status()
-            result = resp.json()
+        client = await self._get_client()
+        resp = await client.post(
+            EZVIZ_TOKEN_URL,
+            data={
+                "appKey": EZVIZ_APP_KEY,
+                "appSecret": EZVIZ_APP_SECRET,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp.raise_for_status()
+        result = resp.json()
 
         if result.get("code") != "200":
             msg = result.get("msg", "Unknown error")
@@ -114,19 +126,19 @@ class EzvizService:
 
         debug_info(f"[EZVIZ] Getting live stream URL for device: {device_serial}")
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                url,
-                data={
-                    "accessToken": token,
-                    "deviceSerial": device_serial,
-                    "channelNo": channel_no,
-                    "protocol": protocol,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            resp.raise_for_status()
-            result = resp.json()
+        client = await self._get_client()
+        resp = await client.post(
+            url,
+            data={
+                "accessToken": token,
+                "deviceSerial": device_serial,
+                "channelNo": channel_no,
+                "protocol": protocol,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp.raise_for_status()
+        result = resp.json()
 
         if result.get("code") != "200":
             msg = result.get("msg", "Unknown error")
@@ -152,18 +164,18 @@ class EzvizService:
 
         debug_info("[EZVIZ] Fetching device list...")
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                url,
-                data={
-                    "accessToken": token,
-                    "pageStart": 0,
-                    "pageSize": 50,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            resp.raise_for_status()
-            result = resp.json()
+        client = await self._get_client()
+        resp = await client.post(
+            url,
+            data={
+                "accessToken": token,
+                "pageStart": 0,
+                "pageSize": 50,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp.raise_for_status()
+        result = resp.json()
 
         if result.get("code") != "200":
             msg = result.get("msg", "Unknown error")
@@ -190,45 +202,63 @@ class EzvizService:
         Raises:
             RuntimeError: If capture or download fails.
         """
-        token = await self.get_access_token()
-        api_base = self._get_api_base()
-
-        # 1. Request camera to capture a snapshot
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{api_base}/api/lapp/device/capture",
-                data={
-                    "accessToken": token,
-                    "deviceSerial": device_serial,
-                    "channelNo": channel_no,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            resp.raise_for_status()
-            result = resp.json()
-
-        if result.get("code") != "200":
-            msg = result.get("msg", "Unknown error")
-            debug_error(f"[EZVIZ] Capture failed: {msg}")
-            raise RuntimeError(f"EZVIZ capture failed: {msg}")
-
-        pic_url: str = result["data"]["picUrl"]
-        debug_info(f"[EZVIZ] Capture URL: {pic_url[:80]}...")
-
-        # 2. Download the image
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
-            img_resp = await client.get(pic_url)
-            img_resp.raise_for_status()
-
-        # 3. Decode to OpenCV frame
+        import asyncio
         import cv2
-        img_array = np.frombuffer(img_resp.content, dtype=np.uint8)
-        frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if frame is None:
-            raise RuntimeError("Failed to decode captured image from EZVIZ")
 
-        debug_info(f"[EZVIZ] Captured frame: {frame.shape[1]}x{frame.shape[0]}")
-        return frame
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                token = await self.get_access_token()
+                api_base = self._get_api_base()
+                client = await self._get_client()
+
+                # 1. Request camera to capture a snapshot
+                resp = await client.post(
+                    f"{api_base}/api/lapp/device/capture",
+                    data={
+                        "accessToken": token,
+                        "deviceSerial": device_serial,
+                        "channelNo": channel_no,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                resp.raise_for_status()
+                result = resp.json()
+
+                if result.get("code") != "200":
+                    msg = result.get("msg", "Unknown error")
+                    # "Device response timeout" = camera busy, retry after delay
+                    if "timeout" in msg.lower() or "busy" in msg.lower():
+                        last_error = RuntimeError(msg)
+                        debug_info(f"[EZVIZ] Camera busy (attempt {attempt+1}), waiting...")
+                        await asyncio.sleep(1.5)
+                        continue
+                    raise RuntimeError(f"EZVIZ capture failed: {msg}")
+
+                pic_url: str = result["data"]["picUrl"]
+
+                # 2. Download the image
+                img_resp = await client.get(pic_url)
+                img_resp.raise_for_status()
+
+                # 3. Decode to OpenCV frame
+                img_array = np.frombuffer(img_resp.content, dtype=np.uint8)
+                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if frame is None:
+                    raise RuntimeError("Failed to decode captured image from EZVIZ")
+
+                return frame
+
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_error = e
+                debug_info(f"[EZVIZ] Capture attempt {attempt+1} timeout, retrying...")
+                # Reset client on connection errors
+                if self._client is not None:
+                    await self._client.aclose()
+                    self._client = None
+                continue
+
+        raise RuntimeError(f"EZVIZ capture failed after 3 attempts: {last_error}")
 
     async def get_device_info(self, device_serial: str) -> dict:
         """Get info for a specific device.
@@ -246,17 +276,17 @@ class EzvizService:
         api_base = self._get_api_base()
         url = f"{api_base}/api/lapp/device/info"
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                url,
-                data={
-                    "accessToken": token,
-                    "deviceSerial": device_serial,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            resp.raise_for_status()
-            result = resp.json()
+        client = await self._get_client()
+        resp = await client.post(
+            url,
+            data={
+                "accessToken": token,
+                "deviceSerial": device_serial,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp.raise_for_status()
+        result = resp.json()
 
         if result.get("code") != "200":
             msg = result.get("msg", "Unknown error")
