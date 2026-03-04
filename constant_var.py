@@ -10,6 +10,10 @@ import logging
 from pathlib import Path
 from typing import Final
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # =============================================
 # PATHS
 # =============================================
@@ -73,6 +77,15 @@ MAX_IMAGE_SIZE_MB: Final[int] = 50
 RTSP_DEFAULT_FRAME_COUNT: Final[int] = 150
 RTSP_MAX_FRAME_COUNT: Final[int] = 1000
 WEBSOCKET_FPS_LIMIT: Final[int] = 15
+
+# =============================================
+# EZVIZ CLOUD API
+# =============================================
+
+EZVIZ_APP_KEY: Final[str] = os.getenv("EZVIZ_APP_KEY", "")
+EZVIZ_APP_SECRET: Final[str] = os.getenv("EZVIZ_APP_SECRET", "")
+EZVIZ_API_BASE: Final[str] = "https://isgpopen.ezvizlife.com"
+EZVIZ_TOKEN_URL: Final[str] = "https://open.ezvizlife.com/api/lapp/token/get"
 
 # =============================================
 # LOGGING (File + Console)
