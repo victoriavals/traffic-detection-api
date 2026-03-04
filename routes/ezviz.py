@@ -45,8 +45,8 @@ detector: DetectorService = DetectorService()
 annotator: AnnotationService = AnnotationService()
 ezviz: EzvizService = EzvizService()
 
-# Capture interval for WebSocket "live" mode (seconds between captures)
-_CAPTURE_INTERVAL_SEC: float = 2.0
+# Minimum interval between captures (seconds) — prevents hammering the API
+_MIN_CAPTURE_INTERVAL_SEC: float = 0.5
 
 
 @router.get(
@@ -181,9 +181,9 @@ async def detect_ezviz(request: EzvizDetectRequest) -> EzvizDetectResponse:
                 if key in counts:
                     counts[key] += 1
 
-            # Small delay between captures (except last)
+            # Small delay to avoid API rate limiting (except last)
             if i < capture_count - 1:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(_MIN_CAPTURE_INTERVAL_SEC)
 
         process_time: float = time.time() - process_start
         total: int = sum(counts.values())
@@ -295,7 +295,10 @@ async def stream_ezviz(ws: WebSocket) -> None:
             "message": f"Connected: {width}x{height} (EZVIZ Cloud Capture Mode)",
         })
 
-        # 4. Capture loop
+        # 4. Optimized capture loop
+        # Connection pooling in EzvizService gives ~1s/capture (vs ~5s before).
+        # No artificial sleep — capture as fast as the EZVIZ API allows.
+        # Retry logic handles "Device response timeout" from camera rate-limiting.
         counts: dict[str, int] = {
             "big_vehicle": 0, "car": 0, "pedestrian": 0, "two_wheeler": 0,
         }
@@ -305,13 +308,12 @@ async def stream_ezviz(ws: WebSocket) -> None:
         display_fps: float = 0.0
         consecutive_failures: int = 0
 
-        # Process the first frame immediately
         frame: np.ndarray = first_frame
 
         while True:
             # Check for stop command (non-blocking)
             try:
-                msg_raw: str = await asyncio.wait_for(ws.receive_text(), timeout=0.01)
+                msg_raw: str = await asyncio.wait_for(ws.receive_text(), timeout=0.001)
                 msg_data: dict = json.loads(msg_raw)
                 if msg_data.get("action") == "stop":
                     debug_info("[EZVIZ/STREAM] Stop requested by client")
@@ -319,11 +321,11 @@ async def stream_ezviz(ws: WebSocket) -> None:
             except (asyncio.TimeoutError, Exception):
                 pass
 
-            # Detect → filter on current frame
+            # Detect → filter on current frame (GPU inference ~0.1s)
             detections: sv.Detections = detector.detect(frame, confidence, iou_val, model_size)
             detections = filter_pedestrian_on_vehicle(detections)
 
-            # Count detections per class (accumulate across frames)
+            # Count detections per class
             for j in range(len(detections)):
                 cls_id: int = int(detections.class_id[j])
                 cls_name: str = CLASS_NAMES.get(cls_id, "unknown")
@@ -371,10 +373,7 @@ async def stream_ezviz(ws: WebSocket) -> None:
                 "frame_number": frame_number,
             })
 
-            # Wait before next capture
-            await asyncio.sleep(_CAPTURE_INTERVAL_SEC)
-
-            # Capture next frame
+            # Capture next frame (EzvizService handles retries for camera timeouts)
             try:
                 frame = await ezviz.capture_image(device_serial, channel_no)
                 consecutive_failures = 0
@@ -387,7 +386,6 @@ async def stream_ezviz(ws: WebSocket) -> None:
                         "message": "Gagal capture 5x berturut-turut — stream dihentikan",
                     })
                     break
-                # Use previous frame on failure
                 await ws.send_json({
                     "type": "info",
                     "message": f"Capture gagal, retry... ({consecutive_failures}/5)",
