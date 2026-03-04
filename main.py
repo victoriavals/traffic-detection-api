@@ -24,6 +24,7 @@ from routes.image import router as image_router
 from routes.video import router as video_router
 from routes.video_jobs import router as video_jobs_router
 from routes.rtsp import router as rtsp_router
+from routes.ezviz import router as ezviz_router
 
 
 @asynccontextmanager
@@ -137,6 +138,7 @@ app.include_router(image_router)
 app.include_router(video_router)
 app.include_router(video_jobs_router)
 app.include_router(rtsp_router)
+app.include_router(ezviz_router)
 
 
 # =============================================
@@ -170,6 +172,10 @@ async def root() -> dict:
             "video_annotate": "POST /video/annotate",
             "rtsp_detect": "POST /rtsp/detect",
             "rtsp_stream": "WS /rtsp/stream",
+            "ezviz_status": "GET /ezviz/status",
+            "ezviz_devices": "GET /ezviz/devices",
+            "ezviz_detect": "POST /ezviz/detect",
+            "ezviz_stream": "WS /ezviz/stream",
         },
         "classes": ["big-vehicle", "car", "pedestrian", "two-wheeler"],
         "models": {
