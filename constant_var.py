@@ -86,6 +86,7 @@ EZVIZ_APP_KEY: Final[str] = os.getenv("EZVIZ_APP_KEY", "")
 EZVIZ_APP_SECRET: Final[str] = os.getenv("EZVIZ_APP_SECRET", "")
 EZVIZ_API_BASE: Final[str] = "https://isgpopen.ezvizlife.com"
 EZVIZ_TOKEN_URL: Final[str] = "https://open.ezvizlife.com/api/lapp/token/get"
+EZVIZ_MAX_CAPTURE_FAILURES: Final[int] = 5  # Max consecutive capture failures before auto-stop
 
 # =============================================
 # LOGGING (File + Console)
