@@ -17,6 +17,7 @@ import asyncio
 import time
 import base64
 import json
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -28,6 +29,7 @@ from constant_var import (
     DEFAULT_IOU,
     DEFAULT_MODEL_SIZE,
     CLASS_NAMES,
+    EZVIZ_MAX_CAPTURE_FAILURES,
     debug_info,
     debug_error,
 )
@@ -263,6 +265,7 @@ async def stream_ezviz(ws: WebSocket) -> None:
         iou_val: float = float(config.get("iou", DEFAULT_IOU))
         model_size: str = str(config.get("model_size", DEFAULT_MODEL_SIZE))
         send_frame: bool = bool(config.get("send_frame", True))
+        persistent_retry: bool = bool(config.get("persistent_retry", False))
 
         # 2. Verify EZVIZ is configured
         if not ezviz.is_configured():
@@ -307,6 +310,7 @@ async def stream_ezviz(ws: WebSocket) -> None:
         fps_count: int = 0
         display_fps: float = 0.0
         consecutive_failures: int = 0
+        last_capture_time: str = datetime.now().strftime("%H:%M:%S")
 
         frame: np.ndarray = first_frame
 
@@ -376,20 +380,44 @@ async def stream_ezviz(ws: WebSocket) -> None:
             # Capture next frame (EzvizService handles retries for camera timeouts)
             try:
                 frame = await ezviz.capture_image(device_serial, channel_no)
+                last_capture_time = datetime.now().strftime("%H:%M:%S")
+                if consecutive_failures > 0:
+                    await ws.send_json({
+                        "type": "retry_status",
+                        "retrying": False,
+                        "message": "Capture berhasil kembali",
+                        "last_capture_time": last_capture_time,
+                    })
                 consecutive_failures = 0
             except Exception as e:
                 consecutive_failures += 1
-                debug_info(f"[EZVIZ/STREAM] Capture failed ({consecutive_failures}/5): {e}")
-                if consecutive_failures >= 5:
+                max_failures: int = EZVIZ_MAX_CAPTURE_FAILURES
+                debug_info(f"[EZVIZ/STREAM] Capture failed ({consecutive_failures}/{max_failures}): {e}")
+
+                if persistent_retry:
                     await ws.send_json({
-                        "type": "error",
-                        "message": "Gagal capture 5x berturut-turut — stream dihentikan",
+                        "type": "retry_status",
+                        "retrying": True,
+                        "consecutive_failures": consecutive_failures,
+                        "last_capture_time": last_capture_time,
+                        "message": f"Capture gagal ({consecutive_failures}x), mencoba ulang... (frame terakhir: {last_capture_time})",
                     })
-                    break
-                await ws.send_json({
-                    "type": "info",
-                    "message": f"Capture gagal, retry... ({consecutive_failures}/5)",
-                })
+                    await asyncio.sleep(_MIN_CAPTURE_INTERVAL_SEC)
+                else:
+                    if consecutive_failures >= max_failures:
+                        await ws.send_json({
+                            "type": "error",
+                            "message": f"Gagal capture {max_failures}x berturut-turut — stream dihentikan",
+                        })
+                        break
+                    await ws.send_json({
+                        "type": "retry_status",
+                        "retrying": True,
+                        "consecutive_failures": consecutive_failures,
+                        "max_failures": max_failures,
+                        "last_capture_time": last_capture_time,
+                        "message": f"Capture gagal, retry... ({consecutive_failures}/{max_failures}) — frame terakhir: {last_capture_time}",
+                    })
 
     except WebSocketDisconnect:
         debug_info("[EZVIZ/STREAM] Client disconnected")
