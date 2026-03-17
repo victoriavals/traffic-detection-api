@@ -8,7 +8,10 @@ Primary approach: Capture-based (uses /api/lapp/device/capture for reliable imag
 Fallback: HLS stream URL (may fail with error 9053 on some camera models like H8c).
 """
 
+import json
 import time
+from pathlib import Path
+
 import httpx
 import numpy as np
 
@@ -19,6 +22,8 @@ from constant_var import (
     debug_info,
     debug_error,
 )
+
+_TOKEN_CACHE_FILE = Path(__file__).parent.parent / "temp" / "ezviz_token.json"
 
 
 class EzvizService:
@@ -54,6 +59,37 @@ class EzvizService:
         """Check if EZVIZ credentials are configured in .env."""
         return bool(EZVIZ_APP_KEY and EZVIZ_APP_SECRET)
 
+    def _load_cached_token(self) -> bool:
+        """Load token from disk cache if still valid. Returns True if loaded."""
+        try:
+            if _TOKEN_CACHE_FILE.exists():
+                data = json.loads(_TOKEN_CACHE_FILE.read_text(encoding="utf-8"))
+                token = data.get("access_token", "")
+                expire = float(data.get("expire_time", 0))
+                area = data.get("area_domain", "")
+                if token and time.time() * 1000 < expire - 300_000:
+                    self._access_token = token
+                    self._token_expire_time = expire
+                    self._area_domain = area
+                    debug_info("[EZVIZ] Token loaded from disk cache")
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _save_token_cache(self) -> None:
+        """Persist current token to disk so it survives server restarts."""
+        try:
+            _TOKEN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _TOKEN_CACHE_FILE.write_text(json.dumps({
+                "access_token": self._access_token,
+                "expire_time": self._token_expire_time,
+                "area_domain": self._area_domain,
+            }), encoding="utf-8")
+            debug_info("[EZVIZ] Token saved to disk cache")
+        except Exception as e:
+            debug_error(f"[EZVIZ] Failed to save token cache: {e}")
+
     async def get_access_token(self) -> str:
         """Get a valid access token, refreshing if expired.
 
@@ -71,6 +107,10 @@ class EzvizService:
 
         # Return cached token if still valid (with 5 min buffer)
         if self._access_token and time.time() * 1000 < self._token_expire_time - 300_000:
+            return self._access_token
+
+        # Try loading from disk (survives server restarts)
+        if self._load_cached_token():
             return self._access_token
 
         debug_info("[EZVIZ] Requesting new access token...")
@@ -97,6 +137,7 @@ class EzvizService:
         self._token_expire_time = float(data["expireTime"])
         self._area_domain = data.get("areaDomain", "")
 
+        self._save_token_cache()
         debug_info(f"[EZVIZ] Token acquired, area domain: {self._area_domain}")
         return self._access_token
 
