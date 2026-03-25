@@ -280,3 +280,61 @@ class EzvizDetectResponse(BaseModel):
     stream_info: dict
     inference_config: dict
     device_info: Optional[dict] = None
+
+
+# =============================================
+# ACTIVITY LOG MODELS
+# =============================================
+
+class ActivityLogCreate(BaseModel):
+    """Request body untuk membuat activity log baru.
+
+    Attributes:
+        type: Tipe deteksi ('Gambar', 'Video', 'RTSP', 'EZVIZ').
+        source: Nama file atau URL sumber.
+        total_deteksi: Total objek terdeteksi.
+        counts: Breakdown jumlah per kelas kendaraan.
+    """
+
+    type: Literal["Gambar", "Video", "RTSP", "EZVIZ"]
+    source: str = Field(..., max_length=500)
+    total_deteksi: int = Field(0, ge=0)
+    counts: Optional[ClassCount] = None
+
+
+class ActivityLogResponse(BaseModel):
+    """Response item untuk activity log.
+
+    Attributes:
+        id: Unique identifier log.
+        timestamp: Waktu log dibuat (ISO 8601).
+        type: Tipe deteksi.
+        source: Nama file atau URL sumber.
+        total_deteksi: Total objek terdeteksi.
+        counts: Breakdown per kelas (jika tersedia).
+    """
+
+    id: str
+    timestamp: str
+    type: str
+    source: str
+    total_deteksi: int
+    counts: Optional[ClassCount] = None
+
+
+class HourlyStatItem(BaseModel):
+    """Data statistik per jam.
+
+    Attributes:
+        hour: Label jam (e.g., '08:00').
+        big_vehicle: Jumlah big-vehicle.
+        car: Jumlah car.
+        pedestrian: Jumlah pedestrian.
+        two_wheeler: Jumlah two-wheeler.
+    """
+
+    hour: str
+    big_vehicle: int = 0
+    car: int = 0
+    pedestrian: int = 0
+    two_wheeler: int = 0
