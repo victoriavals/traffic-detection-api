@@ -20,11 +20,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from constant_var import TEMP_DIR, debug_info, debug_error
 from services.detector_service import DetectorService
+from services.database import connect_db, close_db
 from routes.image import router as image_router
 from routes.video import router as video_router
 from routes.video_jobs import router as video_jobs_router
 from routes.rtsp import router as rtsp_router
 from routes.ezviz import router as ezviz_router
+from routes.stats import router as stats_router
 
 
 @asynccontextmanager
@@ -50,6 +52,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         debug_error(f"Model preload failed: {e}")
 
+    # Connect to MongoDB
+    await connect_db()
+
     debug_info("API is ready! Docs: http://localhost:8000/docs")
     debug_info("=" * 60)
 
@@ -57,6 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # --- SHUTDOWN ---
     debug_info("Shutting down... cleaning up temp files")
+    await close_db()
     _cleanup_temp_dir()
     debug_info("Goodbye!")
 
@@ -139,6 +145,7 @@ app.include_router(video_router)
 app.include_router(video_jobs_router)
 app.include_router(rtsp_router)
 app.include_router(ezviz_router)
+app.include_router(stats_router)
 
 
 # =============================================
@@ -163,6 +170,7 @@ async def root() -> dict:
         "name": "Traffic Counter API",
         "version": "1.0.0",
         "status": "running",
+        "model": detector.get_active_model_name(),
         "device": detector.get_device_info(),
         "endpoints": {
             "docs": "/docs",
@@ -176,6 +184,9 @@ async def root() -> dict:
             "ezviz_devices": "GET /ezviz/devices",
             "ezviz_detect": "POST /ezviz/detect",
             "ezviz_stream": "WS /ezviz/stream",
+            "logs": "POST/GET/DELETE /logs",
+            "stats_hourly": "GET /stats/hourly",
+            "stats_summary": "GET /stats/summary",
         },
         "classes": ["big-vehicle", "car", "pedestrian", "two-wheeler"],
         "models": {
