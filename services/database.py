@@ -9,11 +9,7 @@ from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
-from constant_var import debug_info, debug_error
-
-# MongoDB connection string
-MONGO_URI: str = "mongodb://mongo:yVxSZnGXVHgxKNpixuIILtiSnhMwOIZS@yamabiko.proxy.rlwy.net:44141"
-DB_NAME: str = "traffic_counter"
+from constant_var import MONGO_URI, MONGO_DB_NAME, debug_info, debug_error
 
 _client: Optional[AsyncIOMotorClient] = None
 _db: Optional[AsyncIOMotorDatabase] = None
@@ -25,11 +21,11 @@ async def connect_db() -> None:
 
     try:
         _client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        _db = _client[DB_NAME]
+        _db = _client[MONGO_DB_NAME]
 
         # Verify connection
         await _client.admin.command("ping")
-        debug_info(f"[MongoDB] Connected to {DB_NAME}")
+        debug_info(f"[MongoDB] Connected to {MONGO_DB_NAME}")
 
         # Create indexes for efficient queries
         await _db.activity_logs.create_index("timestamp", expireAfterSeconds=None)
