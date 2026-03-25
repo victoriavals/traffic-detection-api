@@ -79,6 +79,13 @@ RTSP_MAX_FRAME_COUNT: Final[int] = 1000
 WEBSOCKET_FPS_LIMIT: Final[int] = 15
 
 # =============================================
+# MONGODB
+# =============================================
+
+MONGO_URI: Final[str] = os.getenv("MONGO_URI", "")
+MONGO_DB_NAME: Final[str] = os.getenv("MONGO_DB_NAME", "traffic_counter")
+
+# =============================================
 # EZVIZ CLOUD API
 # =============================================
 
