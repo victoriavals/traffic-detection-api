@@ -112,6 +112,21 @@ class DetectorService:
         detections: sv.Detections = sv.Detections.from_ultralytics(results[0])
         return detections
 
+    def get_active_model_name(self) -> str:
+        """Get name of currently loaded model(s).
+
+        Returns:
+            Description of active model(s), e.g. 'YOLOv11s (SMALL)'.
+        """
+        if not self._models:
+            return "No model loaded"
+
+        names = []
+        for size in self._models:
+            label = "YOLOv11s" if size == "SMALL" else "YOLOv11m"
+            names.append(f"{label} ({size})")
+        return ", ".join(names)
+
     def get_device_info(self) -> str:
         """Get current device info string.
 
