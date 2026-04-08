@@ -338,3 +338,45 @@ class HourlyStatItem(BaseModel):
     car: int = 0
     pedestrian: int = 0
     two_wheeler: int = 0
+
+
+class VideoDetectionSave(BaseModel):
+    """Request body untuk menyimpan hasil deteksi video ke grafik hourly.
+
+    Attributes:
+        recording_start: Waktu mulai rekaman (ISO 8601).
+        duration_seconds: Durasi video dalam detik.
+        big_vehicle: Jumlah big-vehicle terdeteksi.
+        car: Jumlah car terdeteksi.
+        pedestrian: Jumlah pedestrian terdeteksi.
+        two_wheeler: Jumlah two-wheeler terdeteksi.
+    """
+
+    recording_start: str = Field(..., description="Waktu mulai rekaman (ISO 8601, e.g. '2026-04-08T08:30:00')")
+    duration_seconds: float = Field(..., gt=0, description="Durasi video dalam detik")
+    big_vehicle: int = Field(0, ge=0)
+    car: int = Field(0, ge=0)
+    pedestrian: int = Field(0, ge=0)
+    two_wheeler: int = Field(0, ge=0)
+
+
+class WeeklyStatItem(BaseModel):
+    """Data statistik per hari dalam seminggu.
+
+    Attributes:
+        day: Label hari singkat (Sen, Sel, Rab, Kam, Jum, Sab, Min).
+        date: Tanggal (YYYY-MM-DD).
+        total: Total semua kendaraan.
+        big_vehicle: Jumlah big-vehicle.
+        car: Jumlah car.
+        pedestrian: Jumlah pedestrian.
+        two_wheeler: Jumlah two-wheeler.
+    """
+
+    day: str
+    date: str
+    total: int = 0
+    big_vehicle: int = 0
+    car: int = 0
+    pedestrian: int = 0
+    two_wheeler: int = 0
