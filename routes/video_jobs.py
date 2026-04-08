@@ -481,9 +481,25 @@ async def preview_frame(
         )
 
         if result.returncode != 0:
-            stderr_snippet: str = result.stderr[-300:] if result.stderr else "No stderr"
-            debug_error(f"[PREVIEW] ffmpeg failed: {stderr_snippet}")
-            raise HTTPException(status_code=400, detail="Tidak dapat mengekstrak frame dari URL video")
+            stderr_snippet: str = result.stderr[-500:] if result.stderr else ""
+            debug_error(f"[PREVIEW] ffmpeg failed: {result.returncode}\n{stderr_snippet}")
+
+            # Provide specific guidance based on URL type and error
+            detail: str
+            if "drive.google.com/drive/folders" in url:
+                detail = "URL yang dimasukkan adalah folder Google Drive, bukan file video. Buka file videonya, lalu salin link share-nya."
+            elif "drive.google.com" in url and "file/d/" not in url:
+                detail = "Format URL Google Drive tidak dikenali. Gunakan link share dari file video (bukan folder)."
+            elif "Invalid data" in stderr_snippet or "Error opening input" in stderr_snippet:
+                detail = "URL tidak mengarah ke file video yang valid. Pastikan link dapat diakses secara publik dan merupakan file video (MP4, AVI, dll)."
+            elif "403" in stderr_snippet or "forbidden" in stderr_snippet.lower():
+                detail = "Akses ditolak (403). Pastikan file tidak dibatasi aksesnya — gunakan 'Anyone with the link' di Google Drive."
+            elif "404" in stderr_snippet or "not found" in stderr_snippet.lower():
+                detail = "File tidak ditemukan (404). Periksa kembali URL yang dimasukkan."
+            else:
+                detail = f"Tidak dapat membuka video dari URL ini. Pastikan URL valid dan dapat diakses publik."
+
+            raise HTTPException(status_code=400, detail=detail)
 
         if not os.path.exists(output_path):
             raise HTTPException(status_code=400, detail="ffmpeg tidak menghasilkan output frame")
