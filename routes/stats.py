@@ -3,25 +3,29 @@ Statistics & Activity Log Routes.
 
 Tag: Stats & Logs
 Endpoints:
-- POST   /logs           → Create activity log entry
-- GET    /logs           → Get activity logs (with pagination)
-- DELETE /logs           → Clear all activity logs
-- GET    /stats/hourly   → Get hourly detection stats for today
-- GET    /stats/summary  → Get overall detection summary
+- POST   /logs                      → Create activity log entry
+- GET    /logs                      → Get activity logs (with pagination)
+- DELETE /logs                      → Clear all activity logs
+- GET    /stats/hourly              → Get hourly detection stats for today (activity_logs)
+- GET    /stats/summary             → Get overall detection summary
+- POST   /stats/video-detection     → Save distributed video detection counts
+- GET    /stats/hourly-detections   → Get per-hour counts from video recordings
+- GET    /stats/weekly-detections   → Get per-day counts for current week
 """
 
 from datetime import datetime, timezone, timedelta
 
-from bson import ObjectId
 from fastapi import APIRouter, Query, HTTPException
 
-from constant_var import debug_info, debug_error
+from constant_var import debug_info
 from services.database import get_db
 from models.schemas import (
     ActivityLogCreate,
     ActivityLogResponse,
     HourlyStatItem,
     ClassCount,
+    VideoDetectionSave,
+    WeeklyStatItem,
 )
 
 router = APIRouter(tags=["📊 Stats & Logs"])
@@ -251,3 +255,230 @@ async def get_summary_stats() -> dict:
         "total_logs": result["total_logs"],
         "total_deteksi": result["total_deteksi"],
     }
+
+
+# =============================================
+# VIDEO DETECTION CHART DATA
+# =============================================
+
+def _distribute_counts(
+    counts: dict,
+    recording_start: datetime,
+    duration_seconds: float,
+) -> list[dict]:
+    """Distribute detection counts proportionally across hours covered by video.
+
+    A video recorded from 08:30 for 90 min gets:
+    - hour 08: 30/90 fraction
+    - hour 09: 60/90 fraction
+    """
+    recording_end = recording_start + timedelta(seconds=duration_seconds)
+    current = recording_start.replace(minute=0, second=0, microsecond=0)
+
+    results = []
+    while current < recording_end:
+        hour_end = current + timedelta(hours=1)
+        overlap_start = max(recording_start, current)
+        overlap_end = min(recording_end, hour_end)
+        overlap_secs = (overlap_end - overlap_start).total_seconds()
+
+        if overlap_secs > 0:
+            frac = overlap_secs / duration_seconds
+            results.append({
+                "date": current.strftime("%Y-%m-%d"),
+                "hour": current.hour,
+                "big_vehicle": round(counts["big_vehicle"] * frac),
+                "car": round(counts["car"] * frac),
+                "pedestrian": round(counts["pedestrian"] * frac),
+                "two_wheeler": round(counts["two_wheeler"] * frac),
+            })
+
+        current = hour_end
+
+    return results
+
+
+@router.post(
+    "/stats/video-detection",
+    summary="Save video detection to hourly chart",
+    description="Distribute vehicle counts from a video across hours based on recording start time and duration, then upsert into hourly_detections collection.",
+)
+async def save_video_detection(body: VideoDetectionSave) -> dict:
+    """Receive detection results and distribute across hourly buckets."""
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        recording_start = datetime.fromisoformat(body.recording_start)
+        if recording_start.tzinfo is None:
+            recording_start = recording_start.replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid recording_start format. Use ISO 8601.")
+
+    counts = {
+        "big_vehicle": body.big_vehicle,
+        "car": body.car,
+        "pedestrian": body.pedestrian,
+        "two_wheeler": body.two_wheeler,
+    }
+
+    buckets = _distribute_counts(counts, recording_start, body.duration_seconds)
+    now = datetime.now(timezone.utc)
+
+    for bucket in buckets:
+        doc_id = f"{bucket['date']}_{bucket['hour']:02d}"
+        await db.hourly_detections.update_one(
+            {"_id": doc_id},
+            {
+                "$inc": {
+                    "big_vehicle": bucket["big_vehicle"],
+                    "car": bucket["car"],
+                    "pedestrian": bucket["pedestrian"],
+                    "two_wheeler": bucket["two_wheeler"],
+                },
+                "$set": {
+                    "date": bucket["date"],
+                    "hour": bucket["hour"],
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
+
+    debug_info(f"[Stats] Saved {len(buckets)} hourly bucket(s) for recording at {body.recording_start}")
+    return {"success": True, "buckets_saved": len(buckets)}
+
+
+@router.get(
+    "/stats/hourly-detections",
+    response_model=list[HourlyStatItem],
+    summary="Get hourly detection chart data",
+    description="Returns 24 per-hour buckets from video recordings for a given date (based on recording time, not upload time).",
+)
+async def get_hourly_detections(
+    date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today UTC)"),
+) -> list[HourlyStatItem]:
+    """Get hourly chart data from hourly_detections collection."""
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+        target_date = date
+    else:
+        target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    hour_data: dict[int, dict] = {}
+    async for doc in db.hourly_detections.find({"date": target_date}):
+        hour_data[doc["hour"]] = {
+            "big_vehicle": doc.get("big_vehicle", 0),
+            "car": doc.get("car", 0),
+            "pedestrian": doc.get("pedestrian", 0),
+            "two_wheeler": doc.get("two_wheeler", 0),
+        }
+
+    result = []
+    for h in range(24):
+        data = hour_data.get(h, {})
+        result.append(HourlyStatItem(
+            hour=f"{h:02d}:00",
+            big_vehicle=data.get("big_vehicle", 0),
+            car=data.get("car", 0),
+            pedestrian=data.get("pedestrian", 0),
+            two_wheeler=data.get("two_wheeler", 0),
+        ))
+
+    return result
+
+
+@router.get(
+    "/stats/weekly-detections",
+    response_model=list[WeeklyStatItem],
+    summary="Get weekly detection chart data",
+    description="Returns 7-day (Mon-Sun) totals from video recordings for the current week.",
+)
+async def get_weekly_detections() -> list[WeeklyStatItem]:
+    """Get per-day totals for current week from hourly_detections collection."""
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    today = datetime.now(timezone.utc).date()
+    monday = today - timedelta(days=today.weekday())
+
+    day_labels = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
+    results = []
+
+    for i in range(7):
+        day_date = monday + timedelta(days=i)
+        date_str = day_date.strftime("%Y-%m-%d")
+
+        pipeline = [
+            {"$match": {"date": date_str}},
+            {
+                "$group": {
+                    "_id": None,
+                    "big_vehicle": {"$sum": "$big_vehicle"},
+                    "car": {"$sum": "$car"},
+                    "pedestrian": {"$sum": "$pedestrian"},
+                    "two_wheeler": {"$sum": "$two_wheeler"},
+                }
+            },
+        ]
+
+        doc = None
+        async for d in db.hourly_detections.aggregate(pipeline):
+            doc = d
+
+        if doc:
+            total = doc["big_vehicle"] + doc["car"] + doc["pedestrian"] + doc["two_wheeler"]
+            results.append(WeeklyStatItem(
+                day=day_labels[i],
+                date=date_str,
+                total=total,
+                big_vehicle=doc["big_vehicle"],
+                car=doc["car"],
+                pedestrian=doc["pedestrian"],
+                two_wheeler=doc["two_wheeler"],
+            ))
+        else:
+            results.append(WeeklyStatItem(day=day_labels[i], date=date_str))
+
+    return results
+
+
+@router.delete(
+    "/stats/video-detections",
+    summary="Delete video detection chart data",
+    description=(
+        "Hapus data deteksi video dari grafik hourly.\n\n"
+        "- Tanpa parameter `date`: hapus **semua** data.\n"
+        "- Dengan `date=YYYY-MM-DD`: hapus data **satu hari** saja (berguna jika salah input timestamp)."
+    ),
+)
+async def delete_video_detections(
+    date: str | None = Query(None, description="Tanggal yang dihapus (YYYY-MM-DD). Kosongkan untuk hapus semua."),
+) -> dict:
+    """Delete hourly_detections data — all or by specific date."""
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+        result = await db.hourly_detections.delete_many({"date": date})
+        debug_info(f"[Stats] Deleted {result.deleted_count} hourly bucket(s) for date {date}")
+        return {"success": True, "deleted_count": result.deleted_count, "scope": f"date={date}"}
+    else:
+        result = await db.hourly_detections.delete_many({})
+        debug_info(f"[Stats] Deleted all {result.deleted_count} hourly bucket(s)")
+        return {"success": True, "deleted_count": result.deleted_count, "scope": "all"}
