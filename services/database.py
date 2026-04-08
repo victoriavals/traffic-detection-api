@@ -28,9 +28,12 @@ async def connect_db() -> None:
         debug_info(f"[MongoDB] Connected to {MONGO_DB_NAME}")
 
         # Create indexes for efficient queries
-        await _db.activity_logs.create_index("timestamp", expireAfterSeconds=None)
         await _db.activity_logs.create_index([("timestamp", -1)])
         await _db.activity_logs.create_index("type")
+
+        # Indexes for hourly_detections (video recording chart data)
+        await _db.hourly_detections.create_index("date")
+        await _db.hourly_detections.create_index([("date", 1), ("hour", 1)])
 
         debug_info("[MongoDB] Indexes created")
     except Exception as e:
