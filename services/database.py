@@ -1,8 +1,29 @@
 """
-MongoDB Database Service.
+MongoDB Database Service — async Motor client and index management.
 
-Async MongoDB client using Motor for activity log persistence
-and detection statistics aggregation.
+Collections
+-----------
+activity_logs
+    Detection activity entries written after each successful detection.
+    Indexes: ``timestamp`` (desc), ``type``.
+
+hourly_detections
+    Hourly vehicle count buckets derived from video recording time ranges.
+    Used by the Dashboard hourly/weekly charts.
+    Indexes: ``date``, ``(date, hour)`` compound.
+
+video_jobs
+    Persistent store for URL-based video processing jobs.
+    Jobs are created here by ``POST /video/jobs`` and updated by the
+    processing daemon threads via fire-and-forget async writes.
+    Indexes: ``created_at`` (desc), ``status``.
+
+Usage
+-----
+Call :func:`connect_db` once during application startup (FastAPI lifespan).
+Then use :func:`get_db` anywhere to obtain the Motor database handle.
+Returns ``None`` when the connection has not been established or failed —
+callers must guard against ``None`` before performing queries.
 """
 
 from typing import Optional
@@ -34,6 +55,10 @@ async def connect_db() -> None:
         # Indexes for hourly_detections (video recording chart data)
         await _db.hourly_detections.create_index("date")
         await _db.hourly_detections.create_index([("date", 1), ("hour", 1)])
+
+        # Indexes for video_jobs (persistent job store)
+        await _db.video_jobs.create_index([("created_at", -1)])
+        await _db.video_jobs.create_index("status")
 
         debug_info("[MongoDB] Indexes created")
     except Exception as e:
