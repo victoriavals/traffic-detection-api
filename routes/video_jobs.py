@@ -1,14 +1,46 @@
 """
-Video Job Routes — URL-based async video processing.
+Video Job Routes — URL-based async video processing with MongoDB persistence.
 
-Tag: Video Jobs
-Endpoints:
-- POST /video/jobs       → Submit URL video processing job (background)
-- GET  /video/jobs/{id}  → Poll job status / result
-- GET  /video/jobs       → List all jobs
-- DELETE /video/jobs/{id} → Cancel/delete a job
+Architecture
+------------
+Jobs are processed in daemon threads and tracked in two stores:
+
+1. **In-memory dict** ``_jobs`` — fast, transient. Lost on server restart.
+2. **MongoDB collection** ``video_jobs`` — persistent. Survives restarts.
+
+Every state change is written to MongoDB via :func:`_persist_job` using
+``asyncio.run_coroutine_threadsafe`` so the sync processing thread can
+schedule async DB writes without blocking.
+
+On **server startup**, :func:`recover_interrupted_jobs` marks any
+``pending / downloading / processing`` documents as ``error`` — these are
+jobs that were killed mid-flight by the previous server shutdown and
+cannot be resumed.
+
+On **GET /video/jobs/{id}**, the endpoint checks memory first (O(1) dict
+lookup), then falls back to MongoDB for jobs that completed before the last
+restart. This means the frontend can always reconnect to a finished job
+even after a server restart, as long as it has the ``job_id`` in
+``localStorage``.
+
+Endpoints
+---------
+- ``POST /video/jobs``        — Submit URL video processing job (202 Accepted)
+- ``GET  /video/jobs/{id}``   — Poll status / result (memory → MongoDB)
+- ``GET  /video/jobs``        — List all jobs (memory + MongoDB, dedup)
+- ``DELETE /video/jobs/{id}`` — Cancel / delete from both stores
+
+Scalability notes
+-----------------
+- ``_MAX_JOBS = 50`` caps in-memory jobs; oldest is evicted (FIFO) when full.
+- MongoDB has no cap — completed jobs accumulate and are queryable historically.
+- ``_persist_job`` is fire-and-forget; DB write failures are logged but never
+  propagate to the user.
+- Progress updates are written to MongoDB every ~2 s during processing.
+  For very high throughput, consider throttling these writes.
 """
 
+import asyncio
 import os
 import re
 import time
@@ -16,6 +48,7 @@ import uuid
 import threading
 import io
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
@@ -41,6 +74,7 @@ from constant_var import (
 )
 from models.schemas import VideoJobRequest, VideoJobStatus, ClassCount
 from services.detector_service import DetectorService
+from services.database import get_db
 from utils.pedestrian_filter import filter_pedestrian_on_vehicle
 
 
@@ -49,12 +83,24 @@ router = APIRouter(prefix="/video", tags=["🎬 Video Processing"])
 # Service instances (shared, thread-safe for inference)
 _detector: DetectorService = DetectorService()
 
+# ─── Event Loop Reference (for thread → async DB writes) ──────────────────────
+
+_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Store the running asyncio event loop so daemon threads can schedule DB writes."""
+    global _event_loop
+    _event_loop = loop
+
+
 # ─── In-memory Job Store ───────────────────────────────────────────────────────
 
 @dataclass
 class _Job:
     """Internal mutable job state (not serialized directly)."""
     job_id: str
+    video_url: str = ""
     status: Literal["pending", "downloading", "processing", "done", "error"] = "pending"
     progress: float = 0.0
     message: str = "Job terdaftar"
@@ -298,8 +344,41 @@ def _run_job(job: _Job, request: VideoJobRequest) -> None:
                 pass
 
 
+def _on_persist_done(future: asyncio.Future) -> None:
+    """Log MongoDB write errors without blocking the caller."""
+    try:
+        future.result()
+    except Exception as exc:
+        debug_error(f"[DB] Job persist failed: {exc}")
+
+
+def _persist_job(job_id: str, fields: dict) -> None:
+    """Fire-and-forget MongoDB upsert from a sync daemon thread.
+
+    Schedules an async coroutine on the main event loop without blocking
+    the calling thread. Silently no-ops if DB or event loop is unavailable.
+    """
+    db = get_db()
+    if db is None or _event_loop is None:
+        return
+
+    # Serialize Pydantic models (e.g. ClassCount) to plain dicts for MongoDB
+    mongo_fields: dict = {}
+    for key, val in fields.items():
+        mongo_fields[key] = val.model_dump() if hasattr(val, "model_dump") else val
+    mongo_fields["updated_at"] = datetime.now(timezone.utc)
+
+    coro = db.video_jobs.update_one(
+        {"_id": job_id},
+        {"$set": mongo_fields},
+        upsert=True,
+    )
+    future = asyncio.run_coroutine_threadsafe(coro, _event_loop)
+    future.add_done_callback(_on_persist_done)
+
+
 def _update_job(job: _Job, **kwargs: object) -> None:
-    """Thread-safe update of job fields.
+    """Thread-safe update of job fields and fire-and-forget MongoDB persist.
 
     Args:
         job: Job to update.
@@ -308,6 +387,9 @@ def _update_job(job: _Job, **kwargs: object) -> None:
     with _jobs_lock:
         for key, val in kwargs.items():
             setattr(job, key, val)
+
+    # Persist to MongoDB (non-blocking from thread)
+    _persist_job(job.job_id, dict(kwargs))
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -349,10 +431,27 @@ async def create_video_job(request: VideoJobRequest) -> VideoJobStatus:
             debug_info(f"[JOBS] Evicted oldest job: {oldest_id[:8]}")
 
     job_id: str = uuid.uuid4().hex
-    job = _Job(job_id=job_id)
+    job = _Job(job_id=job_id, video_url=request.url)
 
     with _jobs_lock:
         _jobs[job_id] = job
+
+    # Persist initial job document to MongoDB
+    db = get_db()
+    if db is not None:
+        await db.video_jobs.insert_one({
+            "_id": job_id,
+            "video_url": request.url,
+            "status": "pending",
+            "progress": 0.0,
+            "message": "Job terdaftar",
+            "counts": None,
+            "video_info": None,
+            "inference_config": None,
+            "error": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        })
 
     # Launch background thread (daemon=True → auto-killed when server exits)
     thread = threading.Thread(target=_run_job, args=(job, request), daemon=True, name=f"job-{job_id[:8]}")
@@ -371,19 +470,39 @@ async def create_video_job(request: VideoJobRequest) -> VideoJobStatus:
 async def get_video_job(job_id: str) -> VideoJobStatus:
     """Poll a video job for its current status and result.
 
+    Checks in-memory store first (fast path), then falls back to MongoDB
+    (handles server restarts where job result was persisted but memory was cleared).
+
     Args:
         job_id: Job ID returned by POST /video/jobs.
 
     Returns:
         Current job status and result (if done).
     """
+    # Fast path: in-memory store
     with _jobs_lock:
         job = _jobs.get(job_id)
+    if job is not None:
+        return _job_to_status(job)
 
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' tidak ditemukan")
+    # Fallback: MongoDB (job completed before server restart, or evicted from memory)
+    db = get_db()
+    if db is not None:
+        doc = await db.video_jobs.find_one({"_id": job_id})
+        if doc is not None:
+            counts = ClassCount(**doc["counts"]) if doc.get("counts") else None
+            return VideoJobStatus(
+                job_id=doc["_id"],
+                status=doc["status"],
+                progress=doc.get("progress", 0.0),
+                message=doc.get("message", ""),
+                counts=counts,
+                video_info=doc.get("video_info"),
+                inference_config=doc.get("inference_config"),
+                error=doc.get("error"),
+            )
 
-    return _job_to_status(job)
+    raise HTTPException(status_code=404, detail=f"Job '{job_id}' tidak ditemukan")
 
 
 @router.get(
@@ -392,11 +511,33 @@ async def get_video_job(job_id: str) -> VideoJobStatus:
     summary="List all video jobs",
 )
 async def list_video_jobs() -> list[VideoJobStatus]:
-    """Return all jobs in the store, newest first."""
+    """Return all jobs (memory + MongoDB), newest first, deduplicated."""
     with _jobs_lock:
-        sorted_jobs = sorted(_jobs.values(), key=lambda j: j.created_at, reverse=True)
+        memory_statuses = {j.job_id: _job_to_status(j) for j in _jobs.values()}
 
-    return [_job_to_status(j) for j in sorted_jobs]
+    results: dict[str, VideoJobStatus] = dict(memory_statuses)
+
+    # Merge MongoDB jobs (historical — not in memory)
+    db = get_db()
+    if db is not None:
+        async for doc in db.video_jobs.find(
+            {"_id": {"$nin": list(results.keys())}},
+            sort=[("created_at", -1)],
+            limit=200,
+        ):
+            counts = ClassCount(**doc["counts"]) if doc.get("counts") else None
+            results[doc["_id"]] = VideoJobStatus(
+                job_id=doc["_id"],
+                status=doc["status"],
+                progress=doc.get("progress", 0.0),
+                message=doc.get("message", ""),
+                counts=counts,
+                video_info=doc.get("video_info"),
+                inference_config=doc.get("inference_config"),
+                error=doc.get("error"),
+            )
+
+    return list(results.values())
 
 
 @router.delete(
@@ -407,20 +548,31 @@ async def list_video_jobs() -> list[VideoJobStatus]:
 async def delete_video_job(job_id: str) -> None:
     """Remove a job from the store and clean up its temp files.
 
+    Removes from both in-memory store and MongoDB. If the job is only in
+    MongoDB (e.g. loaded after a server restart), it is still deleted.
+
     Args:
         job_id: Job ID to delete.
     """
     with _jobs_lock:
         job = _jobs.pop(job_id, None)
 
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' tidak ditemukan")
-
-    if job.temp_path and os.path.exists(job.temp_path):
+    # Clean up temp file if job was in memory
+    if job is not None and job.temp_path and os.path.exists(job.temp_path):
         try:
             os.remove(job.temp_path)
         except OSError:
             pass
+
+    # Always try to delete from MongoDB
+    db = get_db()
+    db_result = None
+    if db is not None:
+        db_result = await db.video_jobs.delete_one({"_id": job_id})
+
+    # 404 only if not found in either store
+    if job is None and (db_result is None or db_result.deleted_count == 0):
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' tidak ditemukan")
 
     debug_info(f"[JOBS] Deleted job {job_id[:8]}")
 
@@ -528,6 +680,33 @@ async def preview_frame(
                 os.remove(output_path)
             except OSError:
                 pass
+
+
+# ─── Startup Recovery ─────────────────────────────────────────────────────────
+
+async def recover_interrupted_jobs() -> None:
+    """On server startup, mark any interrupted jobs (pending/downloading/processing) as error.
+
+    These jobs were running when the server last shut down. Since daemon threads are
+    killed on exit and video data is not stored, they cannot be resumed — so we mark
+    them as error so the frontend can show a clear message instead of polling forever.
+    """
+    db = get_db()
+    if db is None:
+        return
+
+    result = await db.video_jobs.update_many(
+        {"status": {"$in": ["pending", "downloading", "processing"]}},
+        {"$set": {
+            "status": "error",
+            "error": "Server direstart saat job sedang berjalan. Silakan kirim ulang video.",
+            "progress": 0.0,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+
+    if result.modified_count > 0:
+        debug_info(f"[JOBS] Marked {result.modified_count} interrupted job(s) as error on startup")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
