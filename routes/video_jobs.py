@@ -368,12 +368,14 @@ def _persist_job(job_id: str, fields: dict) -> None:
         mongo_fields[key] = val.model_dump() if hasattr(val, "model_dump") else val
     mongo_fields["updated_at"] = datetime.now(timezone.utc)
 
-    coro = db.video_jobs.update_one(
-        {"_id": job_id},
-        {"$set": mongo_fields},
-        upsert=True,
-    )
-    future = asyncio.run_coroutine_threadsafe(coro, _event_loop)
+    async def _do_upsert() -> None:
+        await db.video_jobs.update_one(  # type: ignore[union-attr]
+            {"_id": job_id},
+            {"$set": mongo_fields},
+            upsert=True,
+        )
+
+    future = asyncio.run_coroutine_threadsafe(_do_upsert(), _event_loop)
     future.add_done_callback(_on_persist_done)
 
 
