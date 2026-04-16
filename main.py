@@ -10,6 +10,7 @@ Supports: Image upload, Video upload, RTSP stream
 Author: Naufal Firdaus
 """
 
+import asyncio
 import os
 import glob
 from contextlib import asynccontextmanager
@@ -23,7 +24,7 @@ from services.detector_service import DetectorService
 from services.database import connect_db, close_db
 from routes.image import router as image_router
 from routes.video import router as video_router
-from routes.video_jobs import router as video_jobs_router
+from routes.video_jobs import router as video_jobs_router, set_event_loop, recover_interrupted_jobs
 from routes.rtsp import router as rtsp_router
 from routes.ezviz import router as ezviz_router
 from routes.stats import router as stats_router
@@ -54,6 +55,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Connect to MongoDB
     await connect_db()
+
+    # Store running event loop so video-job daemon threads can schedule
+    # async MongoDB writes via asyncio.run_coroutine_threadsafe.
+    set_event_loop(asyncio.get_running_loop())
+
+    # On restart, mark any in-progress jobs (pending/downloading/processing)
+    # as "error" — they cannot be resumed because the daemon threads were
+    # killed when the server exited.  The frontend will show a clear error
+    # message and prompt the user to re-submit.
+    await recover_interrupted_jobs()
 
     debug_info("API is ready! Docs: http://localhost:8000/docs")
     debug_info("=" * 60)
