@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # message and prompt the user to re-submit.
     await recover_interrupted_jobs()
 
-    debug_info("API is ready! Docs: http://localhost:8000/docs")
+    debug_info("API is ready! Docs: http://localhost:3219/docs")
     debug_info("=" * 60)
 
     yield
@@ -217,6 +217,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=3219,
         reload=True,
     )
