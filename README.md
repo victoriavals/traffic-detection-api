@@ -64,8 +64,8 @@ pip install -r requirements.txt
 
 ```bash
 python main.py
-# → Server running at http://localhost:8000
-# → Swagger UI at http://localhost:8000/docs
+# → Server running at http://localhost:3219
+# → Swagger UI at http://localhost:3219/docs
 ```
 
 ## API Endpoints
