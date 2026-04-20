@@ -12,7 +12,7 @@ from typing import Literal
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, UploadFile, Query, HTTPException
+from fastapi import APIRouter, File, Request, UploadFile, Query, HTTPException
 from fastapi.responses import StreamingResponse
 
 from constant_var import (
@@ -167,6 +167,7 @@ Pedestrian yang overlap dengan kendaraan (driver/rider) secara otomatis difilter
     """,
 )
 async def detect_image(
+    request: Request,
     file: UploadFile = File(..., description="Image file (JPEG, PNG, BMP, TIFF)"),
     confidence: float = Query(DEFAULT_CONFIDENCE, ge=0.0, le=1.0, description="Detection confidence threshold"),
     iou: float = Query(DEFAULT_IOU, ge=0.0, le=1.0, description="IoU threshold for NMS"),
@@ -176,6 +177,15 @@ async def detect_image(
     debug_info(f"[IMAGE/DETECT] Processing: {file.filename} (conf={confidence}, model={model_size})")
 
     try:
+        # Pre-read for size tracking; seek back so _read_image can read normally
+        raw_bytes: bytes = await file.read()
+        request.state.upload_info = {
+            "filename": file.filename or "unknown",
+            "size_mb": round(len(raw_bytes) / (1024 * 1024), 2),
+            "mime": file.content_type or "image/jpeg",
+        }
+        await file.seek(0)
+
         image: np.ndarray = await _read_image(file)
         detections = detector.detect(image, confidence, iou, model_size)
         detections = filter_pedestrian_on_vehicle(detections)
@@ -221,6 +231,7 @@ Upload sebuah gambar dan dapatkan gambar hasil anotasi dengan bounding box dan l
     },
 )
 async def annotate_image(
+    request: Request,
     file: UploadFile = File(..., description="Image file (JPEG, PNG, BMP, TIFF)"),
     confidence: float = Query(DEFAULT_CONFIDENCE, ge=0.0, le=1.0, description="Detection confidence threshold"),
     iou: float = Query(DEFAULT_IOU, ge=0.0, le=1.0, description="IoU threshold for NMS"),
@@ -230,6 +241,14 @@ async def annotate_image(
     debug_info(f"[IMAGE/ANNOTATE] Processing: {file.filename} (conf={confidence}, model={model_size})")
 
     try:
+        raw_bytes: bytes = await file.read()
+        request.state.upload_info = {
+            "filename": file.filename or "unknown",
+            "size_mb": round(len(raw_bytes) / (1024 * 1024), 2),
+            "mime": file.content_type or "image/jpeg",
+        }
+        await file.seek(0)
+
         image: np.ndarray = await _read_image(file)
         detections = detector.detect(image, confidence, iou, model_size)
         detections = filter_pedestrian_on_vehicle(detections)
