@@ -13,13 +13,17 @@ Author: Naufal Firdaus
 import asyncio
 import os
 import glob
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
-from constant_var import TEMP_DIR, debug_info, debug_error
+from constant_var import TEMP_DIR, debug_info, debug_error, mask_rtsp, log_http_request
 from services.detector_service import DetectorService
 from services.database import connect_db, close_db
 from routes.image import router as image_router
@@ -90,6 +94,85 @@ def _cleanup_temp_dir() -> None:
 
 
 # =============================================
+# REQUEST LOGGING MIDDLEWARE
+# =============================================
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Logs every HTTP request/response to requests.log.
+
+    Captures: client IP, method, path, query params, status code, latency,
+    JSON request body (with RTSP credentials masked), file upload metadata
+    (set on request.state.upload_info by route handlers), and JSON response body.
+    Binary responses (images, videos) are not buffered — only their status is logged.
+    WebSocket upgrades are passed through; those are logged by the route handlers.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        # WebSocket upgrades — handled individually in route handlers
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            return await call_next(request)
+
+        # CORS preflight — skip (no business logic, would be noisy)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        start: float = time.perf_counter()
+
+        # Client IP — prefer X-Forwarded-For when behind Nginx proxy
+        forwarded: str = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        client_ip: str = forwarded or (request.client.host if request.client else "unknown")
+
+        # Buffer JSON request body only — never touch multipart/file uploads
+        req_body_str: str | None = None
+        if "application/json" in request.headers.get("content-type", ""):
+            raw_bytes: bytes = await request.body()
+            if raw_bytes:
+                req_body_str = mask_rtsp(raw_bytes.decode("utf-8", errors="replace"))
+
+        # Query string
+        query_str: str | None = str(request.query_params) if request.query_params else None
+
+        # Run the actual route handler
+        response: Response = await call_next(request)
+
+        latency_ms: int = round((time.perf_counter() - start) * 1000)
+
+        # File/video upload info set by route handlers via request.state
+        upload_info: dict | None = getattr(request.state, "upload_info", None)
+
+        # Buffer JSON response only — skip binary (image/video) responses
+        res_body_str: str | None = None
+        if "application/json" in response.headers.get("content-type", ""):
+            chunks: list[bytes] = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+            res_bytes: bytes = b"".join(chunks)
+            res_body_str = res_bytes.decode("utf-8", errors="replace")
+            # Reconstruct response (body iterator was consumed)
+            headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+            response = Response(
+                content=res_bytes,
+                status_code=response.status_code,
+                headers=headers,
+                media_type="application/json",
+            )
+
+        log_http_request(
+            ip=client_ip,
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            latency_ms=latency_ms,
+            query=query_str,
+            req_body=req_body_str,
+            upload_info=upload_info,
+            res_body=res_body_str,
+        )
+
+        return response
+
+
+# =============================================
 # FASTAPI APPLICATION
 # =============================================
 
@@ -130,12 +213,18 @@ Menggunakan model **YOLOv11s/m** yang sudah di-training khusus untuk deteksi ken
 )
 
 # =============================================
-# CORS MIDDLEWARE (for frontend web)
+# MIDDLEWARE STACK
 # =============================================
+# Middleware is applied in reverse registration order:
+# last registered = outermost (runs first).
+# We register RequestLogging first so CORS ends up outermost,
+# meaning CORS handles OPTIONS preflight before logging sees it.
+
+app.add_middleware(RequestLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for dev
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
