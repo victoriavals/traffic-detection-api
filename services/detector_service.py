@@ -5,6 +5,7 @@ Singleton service that manages YOLO model loading and inference.
 Supports lazy loading and caching of multiple model sizes (SMALL/MEDIUM).
 """
 
+import time
 from typing import Optional, Literal
 
 import torch
@@ -18,6 +19,7 @@ from constant_var import (
     DEFAULT_IOU,
     debug_info,
     debug_error,
+    detail_debug,
 )
 
 
@@ -101,6 +103,7 @@ class DetectorService:
         """
         model: YOLO = self.load_model(model_size)
 
+        t0: float = time.perf_counter()
         results = model(
             frame,
             verbose=False,
@@ -108,8 +111,13 @@ class DetectorService:
             iou=iou,
             device=self._device,
         )
+        inference_ms: int = round((time.perf_counter() - t0) * 1000)
 
         detections: sv.Detections = sv.Detections.from_ultralytics(results[0])
+        detail_debug(
+            f"[DETECT] model={model_size} device={self._device} "
+            f"objects={len(detections)} inference={inference_ms}ms"
+        )
         return detections
 
     def get_active_model_name(self) -> str:
