@@ -119,6 +119,13 @@ _jobs_lock = threading.Lock()
 # Maximum number of jobs to keep in memory
 _MAX_JOBS: int = 50
 
+# Browser User-Agent used for all Google Drive HTTP requests and ffmpeg
+_BROWSER_UA: str = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
 
 # ─── URL Normalizer ────────────────────────────────────────────────────────────
 
@@ -170,7 +177,8 @@ def _resolve_gdrive_url(url: str) -> str:
 
     Google Drive returns an HTML confirmation page for large public files instead of
     delivering the file directly. This function detects that page, extracts the
-    one-time ``uuid`` from the hidden form inputs, and returns the confirmed URL.
+    one-time ``uuid`` using two strategies (URL parameter and hidden input), then
+    returns the confirmed download URL.
 
     Returns the input URL unchanged for non-GDrive URLs or if resolution fails.
     """
@@ -178,26 +186,51 @@ def _resolve_gdrive_url(url: str) -> str:
         return url
 
     try:
-        with httpx.Client(follow_redirects=True, timeout=30) as client:
+        with httpx.Client(
+            follow_redirects=True,
+            timeout=30,
+            headers={"User-Agent": _BROWSER_UA},
+        ) as client:
             with client.stream("GET", url) as resp:
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "")
                 if "text/html" not in content_type:
                     return url  # Already a direct video stream
-
-                # Read the HTML confirmation page (small, typically < 200 KB)
                 html = resp.read().decode("utf-8", errors="ignore")
 
-        # Parse all hidden <input> fields from the download form
-        hidden_inputs = re.findall(r"<input[^>]+>", html, re.IGNORECASE)
-        form_values: dict[str, str] = {}
-        for tag in hidden_inputs:
-            name_m = re.search(r'name=["\']([^"\']+)["\']', tag)
-            value_m = re.search(r'value=["\']([^"\']*)["\']', tag)
-            if name_m and value_m:
-                form_values[name_m.group(1)] = value_m.group(1)
+        # Detect quota exceeded BEFORE trying UUID extraction
+        if "quota exceeded" in html.lower() or "too many users" in html.lower():
+            raise ValueError(
+                "Kuota unduhan Google Drive terlampaui. File ini telah diunduh terlalu banyak "
+                "kali oleh pengguna lain. Coba lagi setelah 24 jam, atau salin file ke Google "
+                "Drive Anda sendiri lalu bagikan link baru."
+            )
 
-        uuid_val = form_values.get("uuid")
+        uuid_val: str | None = None
+
+        # Strategy 1: uuid= as URL query param anywhere in the HTML
+        # (form action, anchor href, JavaScript string) — also handles &amp;uuid=
+        m = re.search(r'[?&](?:amp;)?uuid=([^&"\'>\s\\]+)', html)
+        if m:
+            uuid_val = m.group(1)
+
+        if uuid_val is None:
+            # Strategy 2: uuid as hidden <input name="uuid" value="...">
+            # Handles both attribute orderings and arbitrary extra attrs.
+            m = re.search(
+                r'<input\b[^>]*\bname=["\']uuid["\']\b[^>]*\bvalue=["\']([^"\']+)["\']',
+                html,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if not m:
+                m = re.search(
+                    r'<input\b[^>]*\bvalue=["\']([^"\']+)["\']\b[^>]*\bname=["\']uuid["\']',
+                    html,
+                    re.IGNORECASE | re.DOTALL,
+                )
+            if m:
+                uuid_val = m.group(1)
+
         if uuid_val:
             id_match = re.search(r"[?&]id=([^&\s]+)", url)
             if id_match:
@@ -209,10 +242,11 @@ def _resolve_gdrive_url(url: str) -> str:
                 debug_info(f"[GDRIVE] Confirmation resolved, uuid={uuid_val[:8]}…")
                 return resolved
 
-        debug_warning(
-            "[GDRIVE] HTML returned but no UUID found — file may be private or not shared publicly"
-        )
+        snippet = " ".join(html[:400].split())
+        debug_warning(f"[GDRIVE] Unknown HTML from Google Drive: {snippet!r}")
 
+    except ValueError:
+        raise  # Re-raise quota exceeded and other meaningful errors
     except Exception as exc:
         debug_warning(f"[GDRIVE] URL resolution error: {exc}")
 
@@ -233,14 +267,20 @@ def _run_job(job: _Job, request: VideoJobRequest) -> None:
     temp_path: str = str(TEMP_DIR / f"urljob_{job.job_id[:8]}.mp4")
     job.temp_path = temp_path
     download_url: str = _normalize_url(request.url)
-    download_url = _resolve_gdrive_url(download_url)
 
     try:
+        # Resolve Google Drive confirmation page / detect quota errors first
+        download_url = _resolve_gdrive_url(download_url)
+
         # ── Phase 1: Download ─────────────────────────────────────────────────
         _update_job(job, status="downloading", progress=0.0, message="Mengunduh video dari URL...")
         debug_info(f"[JOB/{job.job_id[:8]}] Downloading: {download_url}")
 
-        with httpx.Client(follow_redirects=True, timeout=None) as client:
+        with httpx.Client(
+            follow_redirects=True,
+            timeout=None,
+            headers={"User-Agent": _BROWSER_UA},
+        ) as client:
             with client.stream("GET", download_url) as response:
                 response.raise_for_status()
                 total_bytes: int = int(response.headers.get("content-length", 0))
@@ -673,7 +713,11 @@ async def preview_frame(
     import subprocess
 
     download_url: str = _normalize_url(url)
-    download_url = _resolve_gdrive_url(download_url)
+    try:
+        download_url = _resolve_gdrive_url(download_url)
+    except ValueError as gdrive_err:
+        raise HTTPException(status_code=400, detail=str(gdrive_err))
+
     output_path: str = str(TEMP_DIR / f"preview_{uuid.uuid4().hex[:8]}.jpg")
 
     ffmpeg_bin: str | None = shutil.which("ffmpeg")
@@ -681,14 +725,15 @@ async def preview_frame(
         raise HTTPException(status_code=500, detail="ffmpeg tidak ditemukan di server")
 
     try:
-        # Use ffmpeg to extract first frame directly from URL
-        # ffmpeg handles HTTP redirects, range requests, and moov atom seeking
+        # Use ffmpeg to extract first frame directly from URL.
+        # -user_agent is required so Google Drive serves video instead of HTML.
         cmd: list[str] = [
             ffmpeg_bin,
-            "-y",                      # overwrite output
-            "-i", download_url,        # input from URL (ffmpeg handles HTTP)
-            "-vframes", "1",           # extract only 1 frame
-            "-q:v", "2",               # JPEG quality (2 = high quality)
+            "-y",
+            "-user_agent", _BROWSER_UA,
+            "-i", download_url,
+            "-vframes", "1",
+            "-q:v", "2",
             output_path,
         ]
 
