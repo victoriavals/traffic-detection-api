@@ -208,7 +208,7 @@ Menggunakan model **YOLOv11s/m** yang sudah di-training khusus untuk deteksi ken
 - **ByteTrack** — Multi-object tracking untuk menghindari double counting
 - **GPU Acceleration** — Otomatis menggunakan CUDA GPU jika tersedia
     """,
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -268,7 +268,7 @@ async def root() -> dict:
 
     return {
         "name": "Traffic Counter API",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "status": "running",
         "model": detector.get_active_model_name(),
         "device": detector.get_device_info(),
