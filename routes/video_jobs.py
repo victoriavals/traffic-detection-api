@@ -151,7 +151,7 @@ def _normalize_url(url: str) -> str:
         gdrive_id = gd_open_match.group(1)
 
     if gdrive_id:
-        return f"https://drive.usercontent.google.com/download?id={gdrive_id}&export=download&confirm=t"
+        return f"https://drive.usercontent.google.com/download?id={gdrive_id}&export=download&authuser=0&confirm=t"
 
     # ── Dropbox ───────────────────────────────────────────────────────────────
     # Change dl=0 → dl=1 for direct download
@@ -161,6 +161,60 @@ def _normalize_url(url: str) -> str:
         qs["dl"] = ["1"]
         new_query = urlencode({k: v[0] for k, v in qs.items()})
         return urlunparse(parsed._replace(query=new_query))
+
+    return url
+
+
+def _resolve_gdrive_url(url: str) -> str:
+    """Handle Google Drive virus-scan confirmation page to get the real download URL.
+
+    Google Drive returns an HTML confirmation page for large public files instead of
+    delivering the file directly. This function detects that page, extracts the
+    one-time ``uuid`` from the hidden form inputs, and returns the confirmed URL.
+
+    Returns the input URL unchanged for non-GDrive URLs or if resolution fails.
+    """
+    if "drive.usercontent.google.com" not in url:
+        return url
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=30) as client:
+            with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" not in content_type:
+                    return url  # Already a direct video stream
+
+                # Read the HTML confirmation page (small, typically < 200 KB)
+                html = resp.read().decode("utf-8", errors="ignore")
+
+        # Parse all hidden <input> fields from the download form
+        hidden_inputs = re.findall(r"<input[^>]+>", html, re.IGNORECASE)
+        form_values: dict[str, str] = {}
+        for tag in hidden_inputs:
+            name_m = re.search(r'name=["\']([^"\']+)["\']', tag)
+            value_m = re.search(r'value=["\']([^"\']*)["\']', tag)
+            if name_m and value_m:
+                form_values[name_m.group(1)] = value_m.group(1)
+
+        uuid_val = form_values.get("uuid")
+        if uuid_val:
+            id_match = re.search(r"[?&]id=([^&\s]+)", url)
+            if id_match:
+                file_id = id_match.group(1)
+                resolved = (
+                    f"https://drive.usercontent.google.com/download"
+                    f"?id={file_id}&export=download&authuser=0&confirm=t&uuid={uuid_val}"
+                )
+                debug_info(f"[GDRIVE] Confirmation resolved, uuid={uuid_val[:8]}…")
+                return resolved
+
+        debug_warning(
+            "[GDRIVE] HTML returned but no UUID found — file may be private or not shared publicly"
+        )
+
+    except Exception as exc:
+        debug_warning(f"[GDRIVE] URL resolution error: {exc}")
 
     return url
 
@@ -179,6 +233,7 @@ def _run_job(job: _Job, request: VideoJobRequest) -> None:
     temp_path: str = str(TEMP_DIR / f"urljob_{job.job_id[:8]}.mp4")
     job.temp_path = temp_path
     download_url: str = _normalize_url(request.url)
+    download_url = _resolve_gdrive_url(download_url)
 
     try:
         # ── Phase 1: Download ─────────────────────────────────────────────────
@@ -201,6 +256,16 @@ def _run_job(job: _Job, request: VideoJobRequest) -> None:
                             _update_job(job, progress=pct, message=f"Mengunduh... {size_mb:.1f} MB")
 
         debug_info(f"[JOB/{job.job_id[:8]}] Download complete: {os.path.getsize(temp_path) / 1e6:.1f} MB")
+
+        # Sanity-check: Google Drive sometimes returns an HTML page instead of a
+        # video when the file is private or the confirmation UUID expired.
+        with open(temp_path, "rb") as _f:
+            _header = _f.read(16).lower()
+        if _header.startswith((b"<!doc", b"<html")):
+            raise ValueError(
+                "Google Drive mengembalikan halaman HTML bukan file video. "
+                "Pastikan file diatur 'Anyone with the link' dan coba lagi."
+            )
 
         # ── Phase 2: Open video ───────────────────────────────────────────────
         _update_job(job, status="processing", progress=30.0, message="Membuka video...")
@@ -608,6 +673,7 @@ async def preview_frame(
     import subprocess
 
     download_url: str = _normalize_url(url)
+    download_url = _resolve_gdrive_url(download_url)
     output_path: str = str(TEMP_DIR / f"preview_{uuid.uuid4().hex[:8]}.jpg")
 
     ffmpeg_bin: str | None = shutil.which("ffmpeg")
