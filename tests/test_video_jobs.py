@@ -129,22 +129,29 @@ class TestPersistJob:
     def test_serializes_pydantic_model_to_dict(self, mock_db):
         """ClassCount (Pydantic model) is converted to dict before MongoDB write."""
         fake_loop = MagicMock()
+        submitted_coro = None
+
+        def capture_coro(coro, _loop):
+            nonlocal submitted_coro
+            submitted_coro = coro
+            return MagicMock()
 
         with patch("routes.video_jobs.get_db", return_value=mock_db), \
              patch("routes.video_jobs._event_loop", new=fake_loop), \
-             patch("asyncio.run_coroutine_threadsafe", return_value=MagicMock()) as mock_submit:
+             patch("asyncio.run_coroutine_threadsafe", side_effect=capture_coro):
             counts = ClassCount(big_vehicle=2, car=10, pedestrian=1, two_wheeler=5, total=18)
             _persist_job("job123", {"counts": counts})
 
-            assert mock_submit.called
-            # update_one is called with $set — inspect via mock_db (coroutine scheduled)
-            # We verify the coroutine was CREATED (call on collection), not awaited yet
-            mock_db.video_jobs.update_one.assert_called_once()
-            call_args = mock_db.video_jobs.update_one.call_args
-            set_doc = call_args[0][1]["$set"]
-            # counts must be a plain dict, not ClassCount
-            assert isinstance(set_doc["counts"], dict)
-            assert set_doc["counts"]["car"] == 10
+        assert submitted_coro is not None, "run_coroutine_threadsafe was not called"
+        # Actually run the coroutine so update_one (AsyncMock) gets awaited
+        asyncio.run(submitted_coro)
+
+        mock_db.video_jobs.update_one.assert_called_once()
+        call_args = mock_db.video_jobs.update_one.call_args
+        set_doc = call_args[0][1]["$set"]
+        # counts must be a plain dict, not ClassCount
+        assert isinstance(set_doc["counts"], dict)
+        assert set_doc["counts"]["car"] == 10
 
 
 # ══════════════════════════════════════════════════════════════════════════════
