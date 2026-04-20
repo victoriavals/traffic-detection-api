@@ -31,7 +31,9 @@ from constant_var import (
     CLASS_NAMES,
     EZVIZ_MAX_CAPTURE_FAILURES,
     debug_info,
+    debug_warning,
     debug_error,
+    log_ws_event,
 )
 from models.schemas import EzvizDetectRequest, EzvizDetectResponse, ClassCount
 from services.detector_service import DetectorService
@@ -247,7 +249,10 @@ async def stream_ezviz(ws: WebSocket) -> None:
     5. Client sends {"action": "stop"} to stop
     """
     await ws.accept()
-    debug_info("[EZVIZ/STREAM] WebSocket connected")
+    ws_client_ip: str = ws.client.host if ws.client else "unknown"
+    ws_start: float = time.time()
+    frame_number: int = 0
+    debug_info(f"[EZVIZ/STREAM] WebSocket connected | ip={ws_client_ip}")
 
     try:
         # 1. Receive config from client
@@ -266,6 +271,8 @@ async def stream_ezviz(ws: WebSocket) -> None:
         model_size: str = str(config.get("model_size", DEFAULT_MODEL_SIZE))
         send_frame: bool = bool(config.get("send_frame", True))
         persistent_retry: bool = bool(config.get("persistent_retry", False))
+
+        log_ws_event(event="connect", ip=ws_client_ip, path="/ezviz/stream", config=config)
 
         # 2. Verify EZVIZ is configured
         if not ezviz.is_configured():
@@ -392,7 +399,7 @@ async def stream_ezviz(ws: WebSocket) -> None:
             except Exception as e:
                 consecutive_failures += 1
                 max_failures: int = EZVIZ_MAX_CAPTURE_FAILURES
-                debug_info(f"[EZVIZ/STREAM] Capture failed ({consecutive_failures}/{max_failures}): {e}")
+                debug_warning(f"[EZVIZ/STREAM] Capture failed ({consecutive_failures}/{max_failures}): {e}")
 
                 if persistent_retry:
                     await ws.send_json({
@@ -434,4 +441,12 @@ async def stream_ezviz(ws: WebSocket) -> None:
         except Exception:
             pass
     finally:
-        debug_info("[EZVIZ/STREAM] Cleanup done")
+        duration_s: int = round(time.time() - ws_start)
+        log_ws_event(
+            event="disconnect",
+            ip=ws_client_ip,
+            path="/ezviz/stream",
+            duration_s=duration_s,
+            frames=frame_number,
+        )
+        debug_info(f"[EZVIZ/STREAM] Session ended | duration={duration_s}s | frames={frame_number}")
