@@ -17,7 +17,7 @@ from typing import Literal
 import cv2
 import numpy as np
 import supervision as sv
-from fastapi import APIRouter, File, UploadFile, Query, HTTPException
+from fastapi import APIRouter, File, Request, UploadFile, Query, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
@@ -32,6 +32,7 @@ from constant_var import (
     CLASS_NAMES,
     TEMP_DIR,
     debug_info,
+    debug_warning,
     debug_error,
 )
 from models.schemas import VideoDetectResponse, ClassCount
@@ -218,6 +219,7 @@ Objek dihitung saat centroid-nya melewati garis ini.
     """,
 )
 async def detect_video(
+    request: Request,
     file: UploadFile = File(..., description="Video file (MP4, AVI, MOV, MKV)"),
     confidence: float = Query(DEFAULT_CONFIDENCE, ge=0.0, le=1.0, description="Detection confidence threshold"),
     iou: float = Query(DEFAULT_IOU, ge=0.0, le=1.0, description="IoU threshold for NMS"),
@@ -230,11 +232,17 @@ async def detect_video(
     """Upload video and return vehicle counting results as JSON."""
     debug_info(f"[VIDEO/DETECT] Processing: {file.filename} (conf={confidence}, model={model_size})")
 
-    # Save uploaded file to temp
     temp_input: str = str(TEMP_DIR / f"input_{uuid.uuid4().hex[:8]}.mp4")
 
     try:
         content: bytes = await file.read()
+        # Set basic upload info immediately — available to middleware even if processing fails
+        request.state.upload_info = {
+            "filename": file.filename or "unknown",
+            "size_mb": round(len(content) / (1024 * 1024), 2),
+            "mime": file.content_type or "video/mp4",
+        }
+
         with open(temp_input, "wb") as f:
             f.write(content)
 
@@ -251,6 +259,8 @@ async def detect_video(
         )
 
         counts: dict = result["counts"]
+        # Add video duration now that processing is complete
+        request.state.upload_info["duration_s"] = result["video_info"].get("duration_seconds")
 
         response = VideoDetectResponse(
             success=True,
@@ -317,6 +327,7 @@ Upload sebuah video dan dapatkan video hasil anotasi dengan bounding box, tracki
     },
 )
 async def annotate_video(
+    request: Request,
     file: UploadFile = File(..., description="Video file (MP4, AVI, MOV, MKV)"),
     confidence: float = Query(DEFAULT_CONFIDENCE, ge=0.0, le=1.0, description="Detection confidence threshold"),
     iou: float = Query(DEFAULT_IOU, ge=0.0, le=1.0, description="IoU threshold for NMS"),
@@ -334,6 +345,12 @@ async def annotate_video(
 
     try:
         content: bytes = await file.read()
+        request.state.upload_info = {
+            "filename": file.filename or "unknown",
+            "size_mb": round(len(content) / (1024 * 1024), 2),
+            "mime": file.content_type or "video/mp4",
+        }
+
         with open(temp_input, "wb") as f:
             f.write(content)
 
@@ -350,6 +367,8 @@ async def annotate_video(
             output_path=temp_output,
         )
 
+        request.state.upload_info["duration_s"] = result["video_info"].get("duration_seconds")
+
         if not os.path.exists(temp_output):
             raise HTTPException(status_code=500, detail="Failed to generate annotated video")
 
@@ -363,12 +382,10 @@ async def annotate_video(
         # Re-encode to H.264 for browser playback
         temp_h264: str = str(TEMP_DIR / f"h264_{uuid.uuid4().hex[:8]}.mp4")
         if _reencode_to_h264(temp_output, temp_h264):
-            # Use H.264 version; queue original mp4v file for cleanup too
             serve_path: str = temp_h264
             cleanup_paths: tuple[str, ...] = (temp_input, temp_output, temp_h264)
         else:
-            # Fallback: serve original mp4v (download still works)
-            debug_info("[VIDEO/ANNOTATE] H.264 re-encode failed, serving mp4v fallback")
+            debug_warning("[VIDEO/ANNOTATE] ffmpeg H.264 re-encode failed — serving mp4v fallback (browser <video> may not play)")
             serve_path = temp_output
             cleanup_paths = (temp_input, temp_output)
 
