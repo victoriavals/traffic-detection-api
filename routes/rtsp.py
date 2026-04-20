@@ -29,7 +29,10 @@ from constant_var import (
     CLASS_NAMES,
     WEBSOCKET_FPS_LIMIT,
     debug_info,
+    debug_warning,
     debug_error,
+    mask_rtsp,
+    log_ws_event,
 )
 from models.schemas import RTSPRequest, RTSPDetectResponse, ClassCount
 from services.detector_service import DetectorService
@@ -115,7 +118,7 @@ Koneksi ke RTSP stream, capture sejumlah frame, proses deteksi + tracking + coun
 )
 async def detect_rtsp(request: RTSPRequest) -> RTSPDetectResponse:
     """Connect to RTSP stream, capture frames, and return counting results."""
-    debug_info(f"[RTSP/DETECT] Connecting to: {request.url} ({request.frame_count} frames)")
+    debug_info(f"[RTSP/DETECT] Connecting to: {mask_rtsp(request.url)} ({request.frame_count} frames)")
 
     try:
         cap: cv2.VideoCapture = _open_rtsp_stream(request.url)
@@ -221,6 +224,7 @@ async def detect_rtsp(request: RTSPRequest) -> RTSPDetectResponse:
     except Exception as e:
         debug_error(f"[RTSP/DETECT] Error: {e}")
         raise HTTPException(status_code=500, detail=f"RTSP processing failed: {str(e)}")
+
     finally:
         cap.release()
 
@@ -245,10 +249,13 @@ async def stream_rtsp(ws: WebSocket) -> None:
     5. Disconnect → cleanup automatically
     """
     await ws.accept()
-    debug_info("[RTSP/STREAM] WebSocket connected")
+    ws_client_ip: str = ws.client.host if ws.client else "unknown"
+    debug_info(f"[RTSP/STREAM] WebSocket connected | ip={ws_client_ip}")
 
     loop = asyncio.get_event_loop()
     cap: cv2.VideoCapture | None = None
+    ws_start: float = time.time()
+    frame_number: int = 0  # declared early so finally block can reference it
 
     try:
         # 1. Receive config from client
@@ -272,8 +279,12 @@ async def stream_rtsp(ws: WebSocket) -> None:
         lex: float = float(lc.get("end_x", DEFAULT_LINE_END_X))
         ley: float = float(lc.get("end_y", DEFAULT_LINE_END_Y))
 
+        # Log WS connect with config (mask RTSP credentials)
+        log_config: dict = {**config, "url": mask_rtsp(url)}
+        log_ws_event(event="connect", ip=ws_client_ip, path="/rtsp/stream", config=log_config)
+
         # 2. Open RTSP stream
-        debug_info(f"[RTSP/STREAM] Opening: {url}")
+        debug_info(f"[RTSP/STREAM] Opening: {mask_rtsp(url)}")
         try:
             cap = _open_rtsp_stream(url)
         except ValueError as e:
@@ -342,7 +353,7 @@ async def stream_rtsp(ws: WebSocket) -> None:
                     continue
 
                 # Too many failures → attempt RTSP reconnect
-                debug_info("[RTSP/STREAM] Max failures reached, attempting reconnect...")
+                debug_warning(f"[RTSP/STREAM] {_MAX_CONSECUTIVE_FAILURES} consecutive failures — attempting reconnect")
                 cap.release()
                 cap = None
 
@@ -359,14 +370,14 @@ async def stream_rtsp(ws: WebSocket) -> None:
                         frame_skip = max(1, int(new_fps / WEBSOCKET_FPS_LIMIT))
                         consecutive_failures = 0
                         reconnected = True
-                        debug_info(f"[RTSP/STREAM] Reconnected (attempt {attempt})")
+                        debug_info(f"[RTSP/STREAM] Reconnected on attempt {attempt}")
                         await ws.send_json({
                             "type": "info",
                             "message": "Reconnected to stream",
                         })
                         break
                     except ValueError:
-                        debug_info(f"[RTSP/STREAM] Reconnect attempt {attempt} failed")
+                        debug_warning(f"[RTSP/STREAM] Reconnect attempt {attempt}/{_MAX_RECONNECT_ATTEMPTS} failed")
 
                 if not reconnected:
                     await ws.send_json({
@@ -462,4 +473,12 @@ async def stream_rtsp(ws: WebSocket) -> None:
     finally:
         if cap is not None:
             cap.release()
-        debug_info("[RTSP/STREAM] Cleanup done")
+        duration_s: int = round(time.time() - ws_start)
+        log_ws_event(
+            event="disconnect",
+            ip=ws_client_ip,
+            path="/rtsp/stream",
+            duration_s=duration_s,
+            frames=frame_number,
+        )
+        debug_info(f"[RTSP/STREAM] Session ended | duration={duration_s}s | frames={frame_number}")
