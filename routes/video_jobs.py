@@ -70,6 +70,7 @@ from constant_var import (
     CLASS_NAMES,
     TEMP_DIR,
     debug_info,
+    debug_warning,
     debug_error,
 )
 from models.schemas import VideoJobRequest, VideoJobStatus, ClassCount
@@ -430,7 +431,7 @@ async def create_video_job(request: VideoJobRequest) -> VideoJobStatus:
                     os.remove(old_job.temp_path)
                 except OSError:
                     pass
-            debug_info(f"[JOBS] Evicted oldest job: {oldest_id[:8]}")
+            debug_warning(f"[JOBS] Memory store full (max={_MAX_JOBS}) — evicted oldest job: {oldest_id[:8]}")
 
     job_id: str = uuid.uuid4().hex
     job = _Job(job_id=job_id, video_url=request.url)
