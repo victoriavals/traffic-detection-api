@@ -133,12 +133,9 @@ Menggunakan model **YOLOv11s/m** yang sudah di-training khusus untuk deteksi ken
 # CORS MIDDLEWARE (for frontend web)
 # =============================================
 
-import os as _os
-_CORS_ORIGINS = [o.strip() for o in _os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_CORS_ORIGINS,  # Set CORS_ORIGINS di .env untuk production
+    allow_origins=["*"],  # Allow all origins for dev
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
