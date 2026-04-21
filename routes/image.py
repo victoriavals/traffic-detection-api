@@ -9,6 +9,7 @@ Endpoints:
 
 import io
 from typing import Literal
+from urllib.parse import quote
 
 import cv2
 import numpy as np
@@ -201,7 +202,7 @@ async def detect_image(
         raise
     except Exception as e:
         debug_error(f"[IMAGE/DETECT] Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Gagal mendeteksi gambar. Coba gunakan gambar lain.")
 
 
 @router.post(
@@ -268,11 +269,12 @@ async def annotate_image(
 
         debug_info(f"[IMAGE/ANNOTATE] Done: {len(detections)} objects annotated")
 
+        safe_name = quote(f"annotated_{file.filename or 'image.jpg'}", encoding="utf-8", safe="")
         return StreamingResponse(
             io.BytesIO(buffer.tobytes()),
             media_type="image/jpeg",
             headers={
-                "Content-Disposition": f'inline; filename="annotated_{file.filename}"',
+                "Content-Disposition": f"inline; filename*=UTF-8''{safe_name}",
                 "X-Detections-Count": str(len(detections)),
             },
         )
@@ -281,4 +283,4 @@ async def annotate_image(
         raise
     except Exception as e:
         debug_error(f"[IMAGE/ANNOTATE] Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Annotation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Gagal memproses gambar. Coba gunakan gambar lain.")
