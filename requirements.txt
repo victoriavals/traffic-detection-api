@@ -34,6 +34,10 @@ python-dotenv>=1.0.0
 # --- Database (Activity logs & stats) ---
 motor>=3.6.0
 
+# --- Authentication (JWT + bcrypt) ---
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
 # --- System (ffmpeg required for video re-encoding) ---
 # apt install ffmpeg  (Linux)
 # choco install ffmpeg (Windows)
