@@ -91,6 +91,14 @@ MONGO_URI: Final[str] = os.getenv("MONGO_URI", "")
 MONGO_DB_NAME: Final[str] = os.getenv("MONGO_DB_NAME", "traffic_counter")
 
 # =============================================
+# JWT AUTHENTICATION
+# =============================================
+
+JWT_SECRET_KEY: Final[str] = os.getenv("JWT_SECRET_KEY", "CHANGE_THIS_TO_A_RANDOM_256BIT_SECRET_IN_PRODUCTION")
+JWT_ALGORITHM: Final[str] = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES: Final[int] = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 jam
+
+# =============================================
 # EZVIZ CLOUD API
 # =============================================
 
