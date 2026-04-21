@@ -26,6 +26,7 @@ from starlette.responses import Response
 from constant_var import TEMP_DIR, debug_info, debug_error, mask_rtsp, log_http_request
 from services.detector_service import DetectorService
 from services.database import connect_db, close_db
+from routes.auth import router as auth_router
 from routes.image import router as image_router
 from routes.video import router as video_router
 from routes.video_jobs import router as video_jobs_router, set_event_loop, recover_interrupted_jobs
@@ -240,6 +241,7 @@ app.add_middleware(
 # INCLUDE ROUTERS
 # =============================================
 
+app.include_router(auth_router)
 app.include_router(image_router)
 app.include_router(video_router)
 app.include_router(video_jobs_router)
