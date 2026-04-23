@@ -16,6 +16,7 @@ Endpoints:
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Query, HTTPException
+from pydantic import BaseModel
 
 from constant_var import debug_info
 from services.database import get_db
@@ -55,11 +56,14 @@ async def create_log(body: ActivityLogCreate) -> ActivityLogResponse:
         "source": body.source,
         "total_deteksi": body.total_deteksi,
         "counts": body.counts.model_dump() if body.counts else None,
+        "branch_name": body.branch_name,
+        "address": body.address,
         "created_at": now,
     }
 
     result = await db.activity_logs.insert_one(doc)
-    debug_info(f"[Log] Created: {body.type} — {body.source} ({body.total_deteksi} detections)")
+    loc = f" [{body.branch_name}]" if body.branch_name else ""
+    debug_info(f"[Log] Created: {body.type} — {body.source} ({body.total_deteksi} detections){loc}")
 
     return ActivityLogResponse(
         id=str(result.inserted_id),
@@ -68,6 +72,8 @@ async def create_log(body: ActivityLogCreate) -> ActivityLogResponse:
         source=doc["source"],
         total_deteksi=doc["total_deteksi"],
         counts=body.counts,
+        branch_name=body.branch_name,
+        address=body.address,
     )
 
 
@@ -81,6 +87,7 @@ async def get_logs(
     limit: int = Query(50, ge=1, le=200, description="Max number of logs to return"),
     offset: int = Query(0, ge=0, description="Number of logs to skip"),
     type: str | None = Query(None, description="Filter by type (Gambar, Video, RTSP, EZVIZ)"),
+    branch_name: str | None = Query(None, description="Filter by branch/location name"),
 ) -> list[ActivityLogResponse]:
     """Get paginated activity logs."""
     db = get_db()
@@ -90,6 +97,8 @@ async def get_logs(
     query = {}
     if type:
         query["type"] = type
+    if branch_name:
+        query["branch_name"] = branch_name
 
     cursor = db.activity_logs.find(query).sort("created_at", -1).skip(offset).limit(limit)
 
@@ -106,6 +115,8 @@ async def get_logs(
             source=doc["source"],
             total_deteksi=doc["total_deteksi"],
             counts=counts,
+            branch_name=doc.get("branch_name"),
+            address=doc.get("address"),
         ))
 
     return logs
@@ -140,6 +151,7 @@ async def clear_logs() -> dict:
 )
 async def get_hourly_stats(
     date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today UTC)"),
+    branch_name: str | None = Query(None, description="Filter by branch/location name"),
 ) -> list[HourlyStatItem]:
     """Get hourly aggregated stats for a given date."""
     db = get_db()
@@ -157,14 +169,16 @@ async def get_hourly_stats(
 
     next_day = target + timedelta(days=1)
 
+    match_stage: dict = {
+        "created_at": {"$gte": target, "$lt": next_day},
+        "counts": {"$ne": None},
+    }
+    if branch_name:
+        match_stage["branch_name"] = branch_name
+
     # Aggregation pipeline: group by hour, sum counts
     pipeline = [
-        {
-            "$match": {
-                "created_at": {"$gte": target, "$lt": next_day},
-                "counts": {"$ne": None},
-            }
-        },
+        {"$match": match_stage},
         {
             "$group": {
                 "_id": {"$hour": "$created_at"},
@@ -210,14 +224,20 @@ async def get_hourly_stats(
     summary="Get overall detection summary",
     description="Get total detection counts across all logs, plus total log count.",
 )
-async def get_summary_stats() -> dict:
+async def get_summary_stats(
+    branch_name: str | None = Query(None, description="Filter by branch/location name"),
+) -> dict:
     """Get overall summary of all detection logs."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
+    match_stage: dict = {"counts": {"$ne": None}}
+    if branch_name:
+        match_stage["branch_name"] = branch_name
+
     pipeline = [
-        {"$match": {"counts": {"$ne": None}}},
+        {"$match": match_stage},
         {
             "$group": {
                 "_id": None,
@@ -326,8 +346,12 @@ async def save_video_detection(body: VideoDetectionSave) -> dict:
     buckets = _distribute_counts(counts, recording_start, body.duration_seconds)
     now = datetime.now(timezone.utc)
 
+    branch = body.branch_name or ""
+
     for bucket in buckets:
         doc_id = f"{bucket['date']}_{bucket['hour']:02d}"
+        if branch:
+            doc_id = f"{doc_id}_{branch}"
         await db.hourly_detections.update_one(
             {"_id": doc_id},
             {
@@ -340,6 +364,7 @@ async def save_video_detection(body: VideoDetectionSave) -> dict:
                 "$set": {
                     "date": bucket["date"],
                     "hour": bucket["hour"],
+                    "branch_name": branch or None,
                     "updated_at": now,
                 },
                 "$setOnInsert": {"created_at": now},
@@ -347,7 +372,8 @@ async def save_video_detection(body: VideoDetectionSave) -> dict:
             upsert=True,
         )
 
-    debug_info(f"[Stats] Saved {len(buckets)} hourly bucket(s) for recording at {body.recording_start}")
+    loc = f" [{branch}]" if branch else ""
+    debug_info(f"[Stats] Saved {len(buckets)} hourly bucket(s) for recording at {body.recording_start}{loc}")
     return {"success": True, "buckets_saved": len(buckets)}
 
 
@@ -359,6 +385,7 @@ async def save_video_detection(body: VideoDetectionSave) -> dict:
 )
 async def get_hourly_detections(
     date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today UTC)"),
+    branch_name: str | None = Query(None, description="Filter by branch/location name"),
 ) -> list[HourlyStatItem]:
     """Get hourly chart data from hourly_detections collection."""
     db = get_db()
@@ -374,8 +401,12 @@ async def get_hourly_detections(
     else:
         target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    query: dict = {"date": target_date}
+    if branch_name:
+        query["branch_name"] = branch_name
+
     hour_data: dict[int, dict] = {}
-    async for doc in db.hourly_detections.find({"date": target_date}):
+    async for doc in db.hourly_detections.find(query):
         hour_data[doc["hour"]] = {
             "big_vehicle": doc.get("big_vehicle", 0),
             "car": doc.get("car", 0),
@@ -403,7 +434,9 @@ async def get_hourly_detections(
     summary="Get weekly detection chart data",
     description="Returns 7-day (Mon-Sun) totals from video recordings for the current week.",
 )
-async def get_weekly_detections() -> list[WeeklyStatItem]:
+async def get_weekly_detections(
+    branch_name: str | None = Query(None, description="Filter by branch/location name"),
+) -> list[WeeklyStatItem]:
     """Get per-day totals for current week from hourly_detections collection."""
     db = get_db()
     if db is None:
@@ -419,8 +452,12 @@ async def get_weekly_detections() -> list[WeeklyStatItem]:
         day_date = monday + timedelta(days=i)
         date_str = day_date.strftime("%Y-%m-%d")
 
+        match_stage: dict = {"date": date_str}
+        if branch_name:
+            match_stage["branch_name"] = branch_name
+
         pipeline = [
-            {"$match": {"date": date_str}},
+            {"$match": match_stage},
             {
                 "$group": {
                     "_id": None,
@@ -451,6 +488,65 @@ async def get_weekly_detections() -> list[WeeklyStatItem]:
             results.append(WeeklyStatItem(day=day_labels[i], date=date_str))
 
     return results
+
+
+class ReportRow(BaseModel):
+    date: str
+    hour: int
+    branch_name: str | None
+    big_vehicle: int
+    car: int
+    pedestrian: int
+    two_wheeler: int
+
+
+@router.get(
+    "/stats/report",
+    response_model=list[ReportRow],
+    summary="Get report data",
+    description="Raw hourly_detections rows for a date range, hour range, and optional branch filter. Frontend handles daily/hourly aggregation.",
+    tags=["📊 Stats"],
+)
+async def get_report_data(
+    date_from: str = Query(..., description="Start date YYYY-MM-DD"),
+    date_to: str = Query(..., description="End date YYYY-MM-DD"),
+    hour_from: int = Query(0, ge=0, le=23, description="Start hour (inclusive, 0–23)"),
+    hour_to: int = Query(23, ge=0, le=23, description="End hour (inclusive, 0–23)"),
+    branch_name: str | None = Query(None, description="Filter by branch/location name"),
+) -> list[ReportRow]:
+    """Fetch raw hourly_detections rows for the given filters."""
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        datetime.strptime(date_from, "%Y-%m-%d")
+        datetime.strptime(date_to, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    if date_from > date_to:
+        raise HTTPException(status_code=400, detail="date_from must be <= date_to.")
+
+    query: dict = {
+        "date": {"$gte": date_from, "$lte": date_to},
+        "hour": {"$gte": hour_from, "$lte": hour_to},
+    }
+    if branch_name:
+        query["branch_name"] = branch_name
+
+    rows: list[ReportRow] = []
+    async for doc in db.hourly_detections.find(query).sort([("date", 1), ("hour", 1)]):
+        rows.append(ReportRow(
+            date=doc["date"],
+            hour=doc["hour"],
+            branch_name=doc.get("branch_name"),
+            big_vehicle=doc.get("big_vehicle", 0),
+            car=doc.get("car", 0),
+            pedestrian=doc.get("pedestrian", 0),
+            two_wheeler=doc.get("two_wheeler", 0),
+        ))
+    return rows
 
 
 @router.delete(
