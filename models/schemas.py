@@ -294,12 +294,16 @@ class ActivityLogCreate(BaseModel):
         source: Nama file atau URL sumber.
         total_deteksi: Total objek terdeteksi.
         counts: Breakdown jumlah per kelas kendaraan.
+        branch_name: Nama cabang/lokasi deteksi (opsional).
+        address: Alamat lokasi (opsional).
     """
 
     type: Literal["Gambar", "Video", "RTSP", "EZVIZ"]
     source: str = Field(..., max_length=500)
     total_deteksi: int = Field(0, ge=0)
     counts: Optional[ClassCount] = None
+    branch_name: Optional[str] = Field(None, max_length=200)
+    address: Optional[str] = Field(None, max_length=500)
 
 
 class ActivityLogResponse(BaseModel):
@@ -312,6 +316,8 @@ class ActivityLogResponse(BaseModel):
         source: Nama file atau URL sumber.
         total_deteksi: Total objek terdeteksi.
         counts: Breakdown per kelas (jika tersedia).
+        branch_name: Nama cabang/lokasi deteksi.
+        address: Alamat lokasi.
     """
 
     id: str
@@ -320,6 +326,8 @@ class ActivityLogResponse(BaseModel):
     source: str
     total_deteksi: int
     counts: Optional[ClassCount] = None
+    branch_name: Optional[str] = None
+    address: Optional[str] = None
 
 
 class HourlyStatItem(BaseModel):
@@ -350,6 +358,7 @@ class VideoDetectionSave(BaseModel):
         car: Jumlah car terdeteksi.
         pedestrian: Jumlah pedestrian terdeteksi.
         two_wheeler: Jumlah two-wheeler terdeteksi.
+        branch_name: Nama cabang/lokasi deteksi (opsional).
     """
 
     recording_start: str = Field(..., description="Waktu mulai rekaman (ISO 8601, e.g. '2026-04-08T08:30:00')")
@@ -358,6 +367,7 @@ class VideoDetectionSave(BaseModel):
     car: int = Field(0, ge=0)
     pedestrian: int = Field(0, ge=0)
     two_wheeler: int = Field(0, ge=0)
+    branch_name: Optional[str] = Field(None, max_length=200)
 
 
 class WeeklyStatItem(BaseModel):
