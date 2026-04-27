@@ -390,3 +390,53 @@ class WeeklyStatItem(BaseModel):
     car: int = 0
     pedestrian: int = 0
     two_wheeler: int = 0
+
+
+# =============================================
+# AUTHENTICATION MODELS
+# =============================================
+
+class UserCreate(BaseModel):
+    """Request body untuk pendaftaran user baru."""
+
+    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=200, description="Email user (unik)")
+    name: str = Field(..., min_length=1, max_length=100, description="Nama lengkap user")
+    password: str = Field(..., min_length=6, max_length=128, description="Password (min 6 karakter)")
+
+
+class UserLogin(BaseModel):
+    """Request body untuk login."""
+
+    email: str = Field(..., max_length=200)
+    password: str = Field(..., max_length=128)
+
+
+class UserResponse(BaseModel):
+    """Data user yang dikembalikan ke client (tanpa password_hash)."""
+
+    email: str
+    name: str
+    role: Literal["admin", "operator"]
+    created_at: str
+
+
+class Token(BaseModel):
+    """Response saat login/register sukses."""
+
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
+class AccessTokenOnly(BaseModel):
+    """Response untuk refresh token endpoint."""
+
+    access_token: str
+    token_type: str = "bearer"
+
+
+class RefreshRequest(BaseModel):
+    """Request body untuk refresh token."""
+
+    refresh_token: str
