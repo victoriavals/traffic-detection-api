@@ -23,7 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from constant_var import TEMP_DIR, debug_info, debug_error, mask_rtsp, log_http_request
+from constant_var import TEMP_DIR, JWT_SECRET_KEY, debug_info, debug_warning, debug_error, mask_rtsp, log_http_request
 from services.detector_service import DetectorService
 from services.database import connect_db, close_db
 from routes.image import router as image_router
@@ -32,6 +32,7 @@ from routes.video_jobs import router as video_jobs_router, set_event_loop, recov
 from routes.rtsp import router as rtsp_router
 from routes.ezviz import router as ezviz_router
 from routes.stats import router as stats_router
+from routes.auth import router as auth_router
 
 
 @asynccontextmanager
@@ -59,6 +60,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Connect to MongoDB
     await connect_db()
+
+    # Warn if JWT secret is still the dev default
+    if JWT_SECRET_KEY == "dev-secret-change-me":
+        debug_warning(
+            "[Auth] JWT_SECRET_KEY is using the default dev value — "
+            "set a strong secret in .env for production!"
+        )
 
     # Store running event loop so video-job daemon threads can schedule
     # async MongoDB writes via asyncio.run_coroutine_threadsafe.
@@ -208,7 +216,7 @@ Menggunakan model **YOLOv11s/m** yang sudah di-training khusus untuk deteksi ken
 - **ByteTrack** — Multi-object tracking untuk menghindari double counting
 - **GPU Acceleration** — Otomatis menggunakan CUDA GPU jika tersedia
     """,
-    version="1.3.0",
+    version="1.4.0",
     lifespan=lifespan,
 )
 
@@ -240,6 +248,7 @@ app.add_middleware(
 # INCLUDE ROUTERS
 # =============================================
 
+app.include_router(auth_router)
 app.include_router(image_router)
 app.include_router(video_router)
 app.include_router(video_jobs_router)
@@ -268,12 +277,16 @@ async def root() -> dict:
 
     return {
         "name": "Traffic Counter API",
-        "version": "1.3.0",
+        "version": "1.4.0",
         "status": "running",
         "model": detector.get_active_model_name(),
         "device": detector.get_device_info(),
         "endpoints": {
             "docs": "/docs",
+            "auth_register": "POST /auth/register",
+            "auth_login": "POST /auth/login",
+            "auth_refresh": "POST /auth/refresh",
+            "auth_me": "GET /auth/me",
             "image_detect": "POST /image/detect",
             "image_annotate": "POST /image/annotate",
             "video_detect": "POST /video/detect",
