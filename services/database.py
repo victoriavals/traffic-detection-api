@@ -18,6 +18,11 @@ video_jobs
     processing daemon threads via fire-and-forget async writes.
     Indexes: ``created_at`` (desc), ``status``.
 
+users
+    Authenticated users (admin/operator). First registered user becomes admin,
+    subsequent registrations default to operator.
+    Indexes: ``email`` (unique).
+
 Usage
 -----
 Call :func:`connect_db` once during application startup (FastAPI lifespan).
@@ -59,6 +64,9 @@ async def connect_db() -> None:
         # Indexes for video_jobs (persistent job store)
         await _db.video_jobs.create_index([("created_at", -1)])
         await _db.video_jobs.create_index("status")
+
+        # Index for users (auth) — email must be unique
+        await _db.users.create_index("email", unique=True)
 
         debug_info("[MongoDB] Indexes created")
     except Exception as e:
