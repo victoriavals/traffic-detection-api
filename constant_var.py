@@ -101,6 +101,15 @@ EZVIZ_TOKEN_URL: Final[str] = "https://open.ezvizlife.com/api/lapp/token/get"
 EZVIZ_MAX_CAPTURE_FAILURES: Final[int] = 5  # Max consecutive capture failures before auto-stop
 
 # =============================================
+# JWT AUTHENTICATION
+# =============================================
+
+JWT_SECRET_KEY: Final[str] = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me")
+JWT_ALGORITHM: Final[str] = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES: Final[int] = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+REFRESH_TOKEN_EXPIRE_DAYS: Final[int] = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+# =============================================
 # LOGGING CONFIGURATION
 # =============================================
 
