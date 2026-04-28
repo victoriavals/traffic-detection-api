@@ -33,6 +33,7 @@ from routes.rtsp import router as rtsp_router
 from routes.ezviz import router as ezviz_router
 from routes.stats import router as stats_router
 from routes.auth import router as auth_router
+from routes.branches import router as branches_router
 
 
 @asynccontextmanager
@@ -216,7 +217,7 @@ Menggunakan model **YOLOv11s/m** yang sudah di-training khusus untuk deteksi ken
 - **ByteTrack** — Multi-object tracking untuk menghindari double counting
 - **GPU Acceleration** — Otomatis menggunakan CUDA GPU jika tersedia
     """,
-    version="1.4.0",
+    version="1.5.0",
     lifespan=lifespan,
 )
 
@@ -249,6 +250,7 @@ app.add_middleware(
 # =============================================
 
 app.include_router(auth_router)
+app.include_router(branches_router)
 app.include_router(image_router)
 app.include_router(video_router)
 app.include_router(video_jobs_router)
@@ -277,7 +279,7 @@ async def root() -> dict:
 
     return {
         "name": "Traffic Counter API",
-        "version": "1.4.0",
+        "version": "1.5.0",
         "status": "running",
         "model": detector.get_active_model_name(),
         "device": detector.get_device_info(),
@@ -287,6 +289,7 @@ async def root() -> dict:
             "auth_login": "POST /auth/login",
             "auth_refresh": "POST /auth/refresh",
             "auth_me": "GET /auth/me",
+            "branches": "GET/POST/PATCH/DELETE /branches",
             "image_detect": "POST /image/detect",
             "image_annotate": "POST /image/annotate",
             "video_detect": "POST /video/detect",
