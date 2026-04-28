@@ -22,7 +22,11 @@ from datetime import datetime
 import cv2
 import numpy as np
 import supervision as sv
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, HTTPException
+from jose import JWTError
+
+from dependencies.auth import get_current_user
+from services.auth_service import decode_token
 
 from constant_var import (
     DEFAULT_CONFIDENCE,
@@ -58,7 +62,7 @@ _MIN_CAPTURE_INTERVAL_SEC: float = 0.5
     summary="Check EZVIZ connection status",
     description="Verifikasi apakah credentials EZVIZ sudah dikonfigurasi dan token valid.",
 )
-async def ezviz_status() -> dict:
+async def ezviz_status(_user: dict = Depends(get_current_user)) -> dict:
     """Check EZVIZ API configuration and connectivity."""
     if not ezviz.is_configured():
         return {
@@ -88,7 +92,7 @@ async def ezviz_status() -> dict:
     summary="List EZVIZ devices",
     description="Ambil daftar semua device/kamera yang terdaftar di akun EZVIZ.",
 )
-async def list_devices() -> dict:
+async def list_devices(_user: dict = Depends(get_current_user)) -> dict:
     """List all devices registered on the EZVIZ account."""
     if not ezviz.is_configured():
         raise HTTPException(
@@ -138,7 +142,10 @@ Capture beberapa gambar dari kamera EZVIZ via cloud API, lalu proses deteksi per
 Setiap capture membutuhkan ~2-3 detik. Disarankan gunakan 3-10.
     """,
 )
-async def detect_ezviz(request: EzvizDetectRequest) -> EzvizDetectResponse:
+async def detect_ezviz(
+    request: EzvizDetectRequest,
+    _user: dict = Depends(get_current_user),
+) -> EzvizDetectResponse:
     """Capture multiple images from EZVIZ cloud and run detection on each."""
     # Clamp frame_count for capture mode (each capture takes ~2-3s)
     capture_count: int = min(request.frame_count, 20)
@@ -231,7 +238,10 @@ async def detect_ezviz(request: EzvizDetectRequest) -> EzvizDetectResponse:
 
 
 @router.websocket("/stream")
-async def stream_ezviz(ws: WebSocket) -> None:
+async def stream_ezviz(
+    ws: WebSocket,
+    token: str = Query("", description="JWT access token (required)"),
+) -> None:
     """WebSocket endpoint for real-time EZVIZ cloud capture-based stream.
 
     Uses repeated capture API calls instead of HLS/RTMP streaming.
@@ -248,6 +258,18 @@ async def stream_ezviz(ws: WebSocket) -> None:
        {"type": "frame", "frame": "<base64>", "counts": {...}, "fps": 0.3}
     5. Client sends {"action": "stop"} to stop
     """
+    # ─── Auth check before accept (same pattern as RTSP) ───────────────────
+    if not token:
+        await ws.close(code=4401, reason="Missing token")
+        return
+    try:
+        payload = decode_token(token)
+        if payload.get("type") != "access":
+            raise JWTError("not an access token")
+    except JWTError:
+        await ws.close(code=4401, reason="Invalid or expired token")
+        return
+
     await ws.accept()
     ws_client_ip: str = ws.client.host if ws.client else "unknown"
     ws_start: float = time.time()
