@@ -16,7 +16,11 @@ import json
 import cv2
 import numpy as np
 import supervision as sv
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, HTTPException
+from jose import JWTError
+
+from dependencies.auth import get_current_user
+from services.auth_service import decode_token
 
 from constant_var import (
     DEFAULT_CONFIDENCE,
@@ -116,7 +120,10 @@ Koneksi ke RTSP stream, capture sejumlah frame, proses deteksi + tracking + coun
 **⚠️ Timeout:** Koneksi RTSP bisa gagal jika IP/port/credentials salah.
     """,
 )
-async def detect_rtsp(request: RTSPRequest) -> RTSPDetectResponse:
+async def detect_rtsp(
+    request: RTSPRequest,
+    _user: dict = Depends(get_current_user),
+) -> RTSPDetectResponse:
     """Connect to RTSP stream, capture frames, and return counting results."""
     debug_info(f"[RTSP/DETECT] Connecting to: {mask_rtsp(request.url)} ({request.frame_count} frames)")
 
@@ -230,7 +237,10 @@ async def detect_rtsp(request: RTSPRequest) -> RTSPDetectResponse:
 
 
 @router.websocket("/stream")
-async def stream_rtsp(ws: WebSocket) -> None:
+async def stream_rtsp(
+    ws: WebSocket,
+    token: str = Query("", description="JWT access token (required)"),
+) -> None:
     """WebSocket endpoint for real-time RTSP stream with annotations.
 
     Stability features:
@@ -248,9 +258,24 @@ async def stream_rtsp(ws: WebSocket) -> None:
     4. Client sends {"action": "stop"} to stop
     5. Disconnect → cleanup automatically
     """
+    # ─── Auth check before accept ──────────────────────────────────────────
+    # WebSocket cannot use OAuth2PasswordBearer; we expect ?token=<jwt> in
+    # the URL. Reject with code 4401 (custom: 4xxx range = auth) before
+    # opening the channel so the client sees the closure immediately.
+    if not token:
+        await ws.close(code=4401, reason="Missing token")
+        return
+    try:
+        payload = decode_token(token)
+        if payload.get("type") != "access":
+            raise JWTError("not an access token")
+    except JWTError:
+        await ws.close(code=4401, reason="Invalid or expired token")
+        return
+
     await ws.accept()
     ws_client_ip: str = ws.client.host if ws.client else "unknown"
-    debug_info(f"[RTSP/STREAM] WebSocket connected | ip={ws_client_ip}")
+    debug_info(f"[RTSP/STREAM] WebSocket connected | ip={ws_client_ip} | user={payload.get('sub')}")
 
     loop = asyncio.get_event_loop()
     cap: cv2.VideoCapture | None = None
