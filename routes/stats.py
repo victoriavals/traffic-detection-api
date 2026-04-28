@@ -15,10 +15,11 @@ Endpoints:
 
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
 from constant_var import debug_info
+from dependencies.auth import get_current_user
 from services.database import get_db
 from models.schemas import (
     ActivityLogCreate,
@@ -42,7 +43,10 @@ router = APIRouter(tags=["📊 Stats & Logs"])
     summary="Create activity log",
     description="Save a new detection activity log entry to the database.",
 )
-async def create_log(body: ActivityLogCreate) -> ActivityLogResponse:
+async def create_log(
+    body: ActivityLogCreate,
+    _user: dict = Depends(get_current_user),
+) -> ActivityLogResponse:
     """Create a new activity log entry."""
     db = get_db()
     if db is None:
@@ -88,6 +92,7 @@ async def get_logs(
     offset: int = Query(0, ge=0, description="Number of logs to skip"),
     type: str | None = Query(None, description="Filter by type (Gambar, Video, RTSP, EZVIZ)"),
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
+    _user: dict = Depends(get_current_user),
 ) -> list[ActivityLogResponse]:
     """Get paginated activity logs."""
     db = get_db()
@@ -127,7 +132,7 @@ async def get_logs(
     summary="Clear all activity logs",
     description="Delete all activity log entries from the database.",
 )
-async def clear_logs() -> dict:
+async def clear_logs(_user: dict = Depends(get_current_user)) -> dict:
     """Clear all activity logs."""
     db = get_db()
     if db is None:
@@ -152,6 +157,7 @@ async def clear_logs() -> dict:
 async def get_hourly_stats(
     date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today UTC)"),
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
+    _user: dict = Depends(get_current_user),
 ) -> list[HourlyStatItem]:
     """Get hourly aggregated stats for a given date."""
     db = get_db()
@@ -226,6 +232,7 @@ async def get_hourly_stats(
 )
 async def get_summary_stats(
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
+    _user: dict = Depends(get_current_user),
 ) -> dict:
     """Get overall summary of all detection logs."""
     db = get_db()
@@ -323,7 +330,10 @@ def _distribute_counts(
     summary="Save video detection to hourly chart",
     description="Distribute vehicle counts from a video across hours based on recording start time and duration, then upsert into hourly_detections collection.",
 )
-async def save_video_detection(body: VideoDetectionSave) -> dict:
+async def save_video_detection(
+    body: VideoDetectionSave,
+    _user: dict = Depends(get_current_user),
+) -> dict:
     """Receive detection results and distribute across hourly buckets."""
     db = get_db()
     if db is None:
@@ -386,6 +396,7 @@ async def save_video_detection(body: VideoDetectionSave) -> dict:
 async def get_hourly_detections(
     date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today UTC)"),
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
+    _user: dict = Depends(get_current_user),
 ) -> list[HourlyStatItem]:
     """Get hourly chart data from hourly_detections collection."""
     db = get_db()
@@ -436,6 +447,7 @@ async def get_hourly_detections(
 )
 async def get_weekly_detections(
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
+    _user: dict = Depends(get_current_user),
 ) -> list[WeeklyStatItem]:
     """Get per-day totals for current week from hourly_detections collection."""
     db = get_db()
@@ -513,6 +525,7 @@ async def get_report_data(
     hour_from: int = Query(0, ge=0, le=23, description="Start hour (inclusive, 0–23)"),
     hour_to: int = Query(23, ge=0, le=23, description="End hour (inclusive, 0–23)"),
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
+    _user: dict = Depends(get_current_user),
 ) -> list[ReportRow]:
     """Fetch raw hourly_detections rows for the given filters."""
     db = get_db()
@@ -560,6 +573,7 @@ async def get_report_data(
 )
 async def delete_video_detections(
     date: str | None = Query(None, description="Tanggal yang dihapus (YYYY-MM-DD). Kosongkan untuk hapus semua."),
+    _user: dict = Depends(get_current_user),
 ) -> dict:
     """Delete hourly_detections data — all or by specific date."""
     db = get_db()
