@@ -13,8 +13,10 @@ from urllib.parse import quote
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, Request, UploadFile, Query, HTTPException
+from fastapi import APIRouter, Depends, File, Request, UploadFile, Query, HTTPException
 from fastapi.responses import StreamingResponse
+
+from dependencies.auth import get_current_user
 
 from constant_var import (
     DEFAULT_CONFIDENCE,
@@ -173,6 +175,7 @@ async def detect_image(
     confidence: float = Query(DEFAULT_CONFIDENCE, ge=0.0, le=1.0, description="Detection confidence threshold"),
     iou: float = Query(DEFAULT_IOU, ge=0.0, le=1.0, description="IoU threshold for NMS"),
     model_size: Literal["SMALL", "MEDIUM"] = Query(DEFAULT_MODEL_SIZE, description="Model size: SMALL (faster) or MEDIUM (more accurate)"),
+    _user: dict = Depends(get_current_user),
 ) -> ImageDetectResponse:
     """Detect objects in uploaded image and return JSON results."""
     debug_info(f"[IMAGE/DETECT] Processing: {file.filename} (conf={confidence}, model={model_size})")
@@ -237,6 +240,7 @@ async def annotate_image(
     confidence: float = Query(DEFAULT_CONFIDENCE, ge=0.0, le=1.0, description="Detection confidence threshold"),
     iou: float = Query(DEFAULT_IOU, ge=0.0, le=1.0, description="IoU threshold for NMS"),
     model_size: Literal["SMALL", "MEDIUM"] = Query(DEFAULT_MODEL_SIZE, description="Model size: SMALL (faster) or MEDIUM (more accurate)"),
+    _user: dict = Depends(get_current_user),
 ) -> StreamingResponse:
     """Detect objects in uploaded image and return annotated JPEG."""
     debug_info(f"[IMAGE/ANNOTATE] Processing: {file.filename} (conf={confidence}, model={model_size})")
