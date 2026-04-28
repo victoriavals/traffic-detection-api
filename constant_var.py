@@ -217,6 +217,30 @@ def mask_rtsp(text: str) -> str:
     return _RTSP_CRED_RE.sub(r"\1***:***@", text)
 
 
+# ─── Secret masking for HTTP request/response bodies ─────────────────────────
+#
+# The request-logging middleware buffers JSON bodies for human inspection.
+# Without masking, ``POST /auth/login`` would write the user's plaintext
+# password — and successful responses would write ``access_token`` and
+# ``refresh_token`` — straight into ``requests.log``.
+#
+# Match the JSON field on its key (case-insensitive) and replace its string
+# value with ``***``. Works for the body shapes we emit; if structure changes,
+# the regex stays safe because it only touches values it recognises.
+
+_SECRET_FIELDS_RE = _re.compile(
+    r'("(?:password|new_password|access_token|refresh_token|password_hash|token)"\s*:\s*)"[^"\\]*(?:\\.[^"\\]*)*"',
+    _re.IGNORECASE,
+)
+
+
+def mask_secrets(text: str) -> str:
+    """Mask sensitive JSON fields (passwords, tokens) in a string body."""
+    if not text:
+        return text
+    return _SECRET_FIELDS_RE.sub(r'\1"***"', text)
+
+
 # ─── App log wrappers ─────────────────────────────────────────────────────────
 
 def debug_info(msg: str) -> None:
