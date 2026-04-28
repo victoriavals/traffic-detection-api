@@ -461,9 +461,18 @@ class BranchUpdate(BaseModel):
 
 
 class BranchResponse(BaseModel):
-    """Data lokasi yang dikembalikan ke client."""
+    """Data lokasi yang dikembalikan ke client.
+
+    Audit fields:
+    - ``created_by``: email user yang membuat record (selalu ada)
+    - ``updated_by`` / ``updated_at``: terisi setelah PATCH pertama, None
+      untuk record yang belum pernah diubah
+    """
 
     id: str
     name: str
     address: str
     created_at: str
+    created_by: str = ""
+    updated_by: Optional[str] = None
+    updated_at: Optional[str] = None
