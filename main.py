@@ -23,7 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from constant_var import TEMP_DIR, JWT_SECRET_KEY, debug_info, debug_warning, debug_error, mask_rtsp, log_http_request
+from constant_var import TEMP_DIR, JWT_SECRET_KEY, debug_info, debug_warning, debug_error, mask_rtsp, mask_secrets, log_http_request
 from services.detector_service import DetectorService
 from services.database import connect_db, close_db
 from routes.image import router as image_router
@@ -131,12 +131,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         forwarded: str = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
         client_ip: str = forwarded or (request.client.host if request.client else "unknown")
 
-        # Buffer JSON request body only — never touch multipart/file uploads
+        # Buffer JSON request body only — never touch multipart/file uploads.
+        # mask_secrets strips passwords and tokens before they hit the log file
+        # (otherwise POST /auth/login would write the user's plaintext password
+        # into requests.log).
         req_body_str: str | None = None
         if "application/json" in request.headers.get("content-type", ""):
             raw_bytes: bytes = await request.body()
             if raw_bytes:
-                req_body_str = mask_rtsp(raw_bytes.decode("utf-8", errors="replace"))
+                req_body_str = mask_secrets(mask_rtsp(raw_bytes.decode("utf-8", errors="replace")))
 
         # Query string
         query_str: str | None = str(request.query_params) if request.query_params else None
@@ -156,7 +159,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             async for chunk in response.body_iterator:
                 chunks.append(chunk)
             res_bytes: bytes = b"".join(chunks)
-            res_body_str = res_bytes.decode("utf-8", errors="replace")
+            # Mask access_token / refresh_token in the LOGGED copy only — the
+            # response sent to the client (res_bytes below) keeps the real
+            # values intact.
+            res_body_str = mask_secrets(res_bytes.decode("utf-8", errors="replace"))
             # Reconstruct response (body iterator was consumed)
             headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
             response = Response(
@@ -217,7 +223,7 @@ Menggunakan model **YOLOv11s/m** yang sudah di-training khusus untuk deteksi ken
 - **ByteTrack** — Multi-object tracking untuk menghindari double counting
 - **GPU Acceleration** — Otomatis menggunakan CUDA GPU jika tersedia
     """,
-    version="1.5.0",
+    version="1.6.0",
     lifespan=lifespan,
 )
 
@@ -279,7 +285,7 @@ async def root() -> dict:
 
     return {
         "name": "Traffic Counter API",
-        "version": "1.5.0",
+        "version": "1.6.0",
         "status": "running",
         "model": detector.get_active_model_name(),
         "device": detector.get_device_info(),
