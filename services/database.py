@@ -23,6 +23,12 @@ users
     subsequent registrations default to operator.
     Indexes: ``email`` (unique).
 
+branches
+    Lokasi/cabang yang dipakai sebagai tag pada activity logs & stats.
+    CRUD via ``/branches`` — read terbuka untuk semua user authenticated,
+    create/update/delete admin only.
+    Indexes: ``name`` (unique).
+
 Usage
 -----
 Call :func:`connect_db` once during application startup (FastAPI lifespan).
@@ -67,6 +73,9 @@ async def connect_db() -> None:
 
         # Index for users (auth) — email must be unique
         await _db.users.create_index("email", unique=True)
+
+        # Index for branches (lokasi) — name must be unique
+        await _db.branches.create_index("name", unique=True)
 
         debug_info("[MongoDB] Indexes created")
     except Exception as e:
