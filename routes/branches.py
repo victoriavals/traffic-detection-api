@@ -3,14 +3,15 @@ Branch (Lokasi) Routes.
 
 Tag: Branches
 Endpoints:
-- GET    /branches            → List semua lokasi (auth required)
-- GET    /branches/{id}       → Detail satu lokasi (auth required)
-- POST   /branches            → Create lokasi baru (admin only)
-- PATCH  /branches/{id}       → Update lokasi (admin only)
-- DELETE /branches/{id}       → Hapus lokasi (admin only)
+- GET    /branches            -> List semua lokasi (auth required)
+- GET    /branches/{id}       -> Detail satu lokasi (auth required)
+- POST   /branches            -> Create lokasi baru (auth required)
+- PATCH  /branches/{id}       -> Update lokasi (auth required)
+- DELETE /branches/{id}       -> Hapus lokasi (auth required)
 
-Read terbuka untuk semua user authenticated; mutasi (create/update/delete)
-hanya admin. Branch dipakai sebagai tag pada activity logs & stats.
+Semua user authenticated (admin & operator) boleh CRUD. Setiap mutasi
+mencatat email pelaku ke field audit (`created_by`, `updated_by`,
+`updated_at`) sekaligus ke `logs/app.log` via `debug_info`.
 """
 
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from constant_var import debug_info
-from dependencies.auth import get_current_user, require_admin
+from dependencies.auth import get_current_user
 from models.schemas import BranchCreate, BranchResponse, BranchUpdate
 from services.database import get_db
 
@@ -35,6 +36,9 @@ def _doc_to_response(doc: dict) -> BranchResponse:
         name=doc["name"],
         address=doc.get("address", ""),
         created_at=doc.get("created_at", ""),
+        created_by=doc.get("created_by", ""),
+        updated_by=doc.get("updated_by"),
+        updated_at=doc.get("updated_at"),
     )
 
 
@@ -85,12 +89,12 @@ async def get_branch(
     "/branches",
     response_model=BranchResponse,
     status_code=201,
-    summary="Buat lokasi baru (admin)",
-    description="Hanya admin. Nama lokasi harus unik.",
+    summary="Buat lokasi baru",
+    description="Semua user authenticated boleh membuat. Nama lokasi harus unik. Email pelaku dicatat di `created_by`.",
 )
 async def create_branch(
     payload: BranchCreate,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
 ) -> BranchResponse:
     db = get_db()
     if db is None:
@@ -101,6 +105,8 @@ async def create_branch(
         "address": payload.address.strip(),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": user["email"],
+        "updated_by": None,
+        "updated_at": None,
     }
     try:
         result = await db.branches.insert_one(doc)
@@ -115,12 +121,13 @@ async def create_branch(
 @router.patch(
     "/branches/{branch_id}",
     response_model=BranchResponse,
-    summary="Update lokasi (admin)",
+    summary="Update lokasi",
+    description="Semua user authenticated boleh update. Email pelaku & timestamp dicatat di `updated_by` & `updated_at`.",
 )
 async def update_branch(
     branch_id: str,
     payload: BranchUpdate,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
 ) -> BranchResponse:
     db = get_db()
     if db is None:
@@ -135,6 +142,9 @@ async def update_branch(
     if not update_doc:
         raise HTTPException(status_code=400, detail="Tidak ada field yang diupdate")
 
+    update_doc["updated_by"] = user["email"]
+    update_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+
     oid = _parse_object_id(branch_id)
     try:
         result = await db.branches.find_one_and_update(
@@ -148,26 +158,30 @@ async def update_branch(
     if not result:
         raise HTTPException(status_code=404, detail="Lokasi tidak ditemukan")
 
-    debug_info(f"[Branch] Updated {branch_id} by {user['email']}")
+    debug_info(f"[Branch] Updated '{result['name']}' by {user['email']}")
     return _doc_to_response(result)
 
 
 @router.delete(
     "/branches/{branch_id}",
     status_code=204,
-    summary="Hapus lokasi (admin)",
+    summary="Hapus lokasi",
+    description="Semua user authenticated boleh hapus. Aksi dicatat di `logs/app.log`. Data deteksi historis tetap tersimpan.",
 )
 async def delete_branch(
     branch_id: str,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
 ) -> None:
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
-    result = await db.branches.delete_one({"_id": _parse_object_id(branch_id)})
-    if result.deleted_count == 0:
+    oid = _parse_object_id(branch_id)
+    # Fetch first so the audit log captures the (now-gone) name.
+    doc = await db.branches.find_one({"_id": oid})
+    if not doc:
         raise HTTPException(status_code=404, detail="Lokasi tidak ditemukan")
 
-    debug_info(f"[Branch] Deleted {branch_id} by {user['email']}")
+    await db.branches.delete_one({"_id": oid})
+    debug_info(f"[Branch] Deleted '{doc.get('name')}' by {user['email']}")
     return None
