@@ -142,15 +142,21 @@ async def test_branches_phase_a(client: httpx.AsyncClient, admin_tok: str, op_to
            r.status_code == 200 and isinstance(r.json(), list),
            f"got {r.status_code}")
 
-    # POST /branches as operator -> 403
-    r = await client.post(f"{BASE}/branches", json={"name": f"qa-branch-1-{RND}", "address": "Jl. Test"}, headers=O)
-    record("POST /branches as operator -> 403 (admin only)", r.status_code == 403, f"got {r.status_code}")
+    # POST /branches as operator -> 201 (v1.6.0: all authed users can CRUD)
+    op_branch_name = f"qa-op-branch-{RND}"
+    r = await client.post(f"{BASE}/branches", json={"name": op_branch_name, "address": "Jl. Operator"}, headers=O)
+    op_ok = r.status_code == 201 and r.json().get("created_by")
+    record("POST /branches as operator -> 201 + created_by recorded",
+           op_ok,
+           f"got {r.status_code} created_by={r.json().get('created_by') if r.status_code == 201 else 'n/a'}")
+    if op_ok:
+        created_ids.append(r.json()["id"])
 
     # POST /branches as admin -> 201
     name1 = f"qa-branch-1-{RND}"
     r = await client.post(f"{BASE}/branches", json={"name": name1, "address": "Jl. Sudirman 1"}, headers=A)
-    ok = r.status_code == 201 and r.json().get("name") == name1
-    record("POST /branches as admin -> 201 + body matches", ok, f"got {r.status_code}")
+    ok = r.status_code == 201 and r.json().get("name") == name1 and r.json().get("created_by") == ADMIN_EMAIL
+    record("POST /branches as admin -> 201 + body matches + created_by=admin", ok, f"got {r.status_code}")
     if ok:
         created_ids.append(r.json()["id"])
         bid1 = r.json()["id"]
@@ -180,16 +186,27 @@ async def test_branches_phase_a(client: httpx.AsyncClient, admin_tok: str, op_to
     r = await client.get(f"{BASE}/branches/000000000000000000000000", headers=A)
     record("GET /branches/{nonexistent_id} -> 404", r.status_code == 404, f"got {r.status_code}")
 
-    # PATCH as operator -> 403
+    # PATCH as operator -> 200 (v1.6.0: all authed users can PATCH; updated_by recorded)
     if created_ids:
-        r = await client.patch(f"{BASE}/branches/{bid1}", json={"address": "hacked"}, headers=O)
-        record("PATCH /branches/{id} as operator -> 403", r.status_code == 403, f"got {r.status_code}")
+        r = await client.patch(f"{BASE}/branches/{bid1}", json={"address": "Jl. Operator Edit"}, headers=O)
+        ok = (
+            r.status_code == 200
+            and r.json().get("address") == "Jl. Operator Edit"
+            and r.json().get("updated_by") == OP_EMAIL
+            and r.json().get("updated_at") is not None
+        )
+        record("PATCH /branches/{id} as operator -> 200 + updated_by=operator + timestamp set",
+               ok, f"got {r.status_code} updated_by={r.json().get('updated_by') if r.status_code == 200 else 'n/a'}")
 
-        # PATCH as admin -> 200 + new value
+        # PATCH as admin -> 200 + updated_by switches to admin
         r = await client.patch(f"{BASE}/branches/{bid1}", json={"address": "Jl. Updated"}, headers=A)
-        record("PATCH /branches/{id} as admin -> 200 + updated address",
-               r.status_code == 200 and r.json().get("address") == "Jl. Updated",
-               f"got {r.status_code} address={r.json().get('address') if r.status_code==200 else 'n/a'}")
+        ok = (
+            r.status_code == 200
+            and r.json().get("address") == "Jl. Updated"
+            and r.json().get("updated_by") == ADMIN_EMAIL
+        )
+        record("PATCH /branches/{id} as admin -> 200 + updated_by=admin",
+               ok, f"got {r.status_code}")
 
         # PATCH empty body -> 400
         r = await client.patch(f"{BASE}/branches/{bid1}", json={}, headers=A)
@@ -202,15 +219,22 @@ async def test_branches_phase_a(client: httpx.AsyncClient, admin_tok: str, op_to
         bid2 = r.json()["id"]
         created_ids.append(bid2)
 
-        # DELETE as operator -> 403
+        # DELETE as operator -> 204 (v1.6.0: all authed users can DELETE)
         r = await client.delete(f"{BASE}/branches/{bid2}", headers=O)
-        record("DELETE /branches/{id} as operator -> 403", r.status_code == 403, f"got {r.status_code}")
-
-        # DELETE as admin -> 204
-        r = await client.delete(f"{BASE}/branches/{bid2}", headers=A)
-        record("DELETE /branches/{id} as admin -> 204", r.status_code == 204, f"got {r.status_code}")
+        record("DELETE /branches/{id} as operator -> 204", r.status_code == 204, f"got {r.status_code}")
         if r.status_code == 204:
             created_ids.remove(bid2)
+
+        # Create another branch and let admin delete this time
+        name3 = f"qa-branch-3-{RND}"
+        r = await client.post(f"{BASE}/branches", json={"name": name3, "address": "x"}, headers=A)
+        if r.status_code == 201:
+            bid3 = r.json()["id"]
+            created_ids.append(bid3)
+            r = await client.delete(f"{BASE}/branches/{bid3}", headers=A)
+            record("DELETE /branches/{id} as admin -> 204", r.status_code == 204, f"got {r.status_code}")
+            if r.status_code == 204:
+                created_ids.remove(bid3)
 
         # DELETE non-existent -> 404
         r = await client.delete(f"{BASE}/branches/000000000000000000000000", headers=A)
