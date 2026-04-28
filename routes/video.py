@@ -17,9 +17,11 @@ from typing import Literal
 import cv2
 import numpy as np
 import supervision as sv
-from fastapi import APIRouter, File, Request, UploadFile, Query, HTTPException
+from fastapi import APIRouter, Depends, File, Request, UploadFile, Query, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+
+from dependencies.auth import get_current_user
 
 from constant_var import (
     DEFAULT_CONFIDENCE,
@@ -228,6 +230,7 @@ async def detect_video(
     line_start_y: float = Query(DEFAULT_LINE_START_Y, ge=0.0, le=1.0, description="Counting line start Y (0.0=top, 1.0=bottom)"),
     line_end_x: float = Query(DEFAULT_LINE_END_X, ge=0.0, le=1.0, description="Counting line end X"),
     line_end_y: float = Query(DEFAULT_LINE_END_Y, ge=0.0, le=1.0, description="Counting line end Y"),
+    _user: dict = Depends(get_current_user),
 ) -> VideoDetectResponse:
     """Upload video and return vehicle counting results as JSON."""
     debug_info(f"[VIDEO/DETECT] Processing: {file.filename} (conf={confidence}, model={model_size})")
@@ -336,6 +339,7 @@ async def annotate_video(
     line_start_y: float = Query(DEFAULT_LINE_START_Y, ge=0.0, le=1.0, description="Counting line start Y"),
     line_end_x: float = Query(DEFAULT_LINE_END_X, ge=0.0, le=1.0, description="Counting line end X"),
     line_end_y: float = Query(DEFAULT_LINE_END_Y, ge=0.0, le=1.0, description="Counting line end Y"),
+    _user: dict = Depends(get_current_user),
 ) -> FileResponse:
     """Upload video and return annotated MP4 with detections, tracking, and counting."""
     debug_info(f"[VIDEO/ANNOTATE] Processing: {file.filename} (conf={confidence}, model={model_size})")
