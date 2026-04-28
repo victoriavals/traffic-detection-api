@@ -440,3 +440,30 @@ class RefreshRequest(BaseModel):
     """Request body untuk refresh token."""
 
     refresh_token: str
+
+
+# =============================================
+# BRANCH (LOKASI) MODELS
+# =============================================
+
+class BranchCreate(BaseModel):
+    """Request body untuk membuat lokasi baru."""
+
+    name: str = Field(..., min_length=1, max_length=200, description="Nama lokasi (unik)")
+    address: str = Field("", max_length=500, description="Alamat lokasi (opsional)")
+
+
+class BranchUpdate(BaseModel):
+    """Request body untuk update lokasi (semua field opsional)."""
+
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    address: Optional[str] = Field(None, max_length=500)
+
+
+class BranchResponse(BaseModel):
+    """Data lokasi yang dikembalikan ke client."""
+
+    id: str
+    name: str
+    address: str
+    created_at: str
