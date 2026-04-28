@@ -56,8 +56,10 @@ import cv2
 import numpy as np
 import supervision as sv
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
+
+from dependencies.auth import get_current_user
 
 from constant_var import (
     DEFAULT_CONFIDENCE,
@@ -523,7 +525,10 @@ Kirim URL video publik untuk diproses secara asinkron (background job).
 **Frame Sampling:** Untuk video panjang (>1 jam), gunakan `sample_every_n_seconds=5` atau lebih besar.
     """,
 )
-async def create_video_job(request: VideoJobRequest) -> VideoJobStatus:
+async def create_video_job(
+    request: VideoJobRequest,
+    _user: dict = Depends(get_current_user),
+) -> VideoJobStatus:
     """Create and start a background video processing job from a public URL."""
     # Evict oldest jobs if store is full
     with _jobs_lock:
@@ -575,7 +580,10 @@ async def create_video_job(request: VideoJobRequest) -> VideoJobStatus:
     response_model=VideoJobStatus,
     summary="Get video job status / result",
 )
-async def get_video_job(job_id: str) -> VideoJobStatus:
+async def get_video_job(
+    job_id: str,
+    _user: dict = Depends(get_current_user),
+) -> VideoJobStatus:
     """Poll a video job for its current status and result.
 
     Checks in-memory store first (fast path), then falls back to MongoDB
@@ -618,7 +626,9 @@ async def get_video_job(job_id: str) -> VideoJobStatus:
     response_model=list[VideoJobStatus],
     summary="List all video jobs",
 )
-async def list_video_jobs() -> list[VideoJobStatus]:
+async def list_video_jobs(
+    _user: dict = Depends(get_current_user),
+) -> list[VideoJobStatus]:
     """Return all jobs (memory + MongoDB), newest first, deduplicated."""
     with _jobs_lock:
         memory_statuses = {j.job_id: _job_to_status(j) for j in _jobs.values()}
@@ -653,7 +663,10 @@ async def list_video_jobs() -> list[VideoJobStatus]:
     status_code=204,
     summary="Delete a video job",
 )
-async def delete_video_job(job_id: str) -> None:
+async def delete_video_job(
+    job_id: str,
+    _user: dict = Depends(get_current_user),
+) -> None:
     """Remove a job from the store and clean up its temp files.
 
     Removes from both in-memory store and MongoDB. If the job is only in
@@ -696,6 +709,7 @@ async def delete_video_job(job_id: str) -> None:
 )
 async def preview_frame(
     url: str,
+    _user: dict = Depends(get_current_user),
 ) -> Response:
     """Extract the first frame from a URL video and return as JPEG.
 
