@@ -47,8 +47,12 @@ async def register(payload: UserCreate) -> Token:
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Nama tidak boleh kosong atau hanya spasi")
+
     try:
-        user = await create_user(payload.email, payload.name, payload.password)
+        user = await create_user(payload.email, name, payload.password)
     except DuplicateKeyError:
         raise HTTPException(status_code=409, detail="Email sudah terdaftar")
 
