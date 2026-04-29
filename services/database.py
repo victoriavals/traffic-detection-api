@@ -25,8 +25,9 @@ users
 
 branches
     Lokasi/cabang yang dipakai sebagai tag pada activity logs & stats.
-    CRUD via ``/branches`` — read terbuka untuk semua user authenticated,
-    create/update/delete admin only.
+    CRUD via ``/branches`` — semua operasi (read/create/update/delete) terbuka
+    untuk semua user authenticated (admin & operator). Audit fields (created_by,
+    updated_by, updated_at) dicatat di setiap dokumen.
     Indexes: ``name`` (unique).
 
 Usage
