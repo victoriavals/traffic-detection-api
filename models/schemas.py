@@ -401,14 +401,14 @@ class UserCreate(BaseModel):
 
     email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=200, description="Email user (unik)")
     name: str = Field(..., min_length=1, max_length=100, description="Nama lengkap user")
-    password: str = Field(..., min_length=6, max_length=128, description="Password (min 6 karakter)")
+    password: str = Field(..., min_length=6, max_length=72, description="Password (min 6, maks 72 karakter — bcrypt limit)")
 
 
 class UserLogin(BaseModel):
     """Request body untuk login."""
 
     email: str = Field(..., max_length=200)
-    password: str = Field(..., max_length=128)
+    password: str = Field(..., max_length=72)
 
 
 class UserResponse(BaseModel):
