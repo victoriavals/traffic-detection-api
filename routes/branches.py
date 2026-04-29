@@ -100,8 +100,12 @@ async def create_branch(
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Nama lokasi tidak boleh kosong atau hanya spasi")
+
     doc = {
-        "name": payload.name.strip(),
+        "name": name,
         "address": payload.address.strip(),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": user["email"],
@@ -135,7 +139,10 @@ async def update_branch(
 
     update_doc: dict = {}
     if payload.name is not None:
-        update_doc["name"] = payload.name.strip()
+        stripped_name = payload.name.strip()
+        if not stripped_name:
+            raise HTTPException(status_code=422, detail="Nama lokasi tidak boleh kosong atau hanya spasi")
+        update_doc["name"] = stripped_name
     if payload.address is not None:
         update_doc["address"] = payload.address.strip()
 
