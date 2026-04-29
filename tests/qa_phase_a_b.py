@@ -30,7 +30,7 @@ import websockets
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-BASE = "http://127.0.0.1:3219"
+BASE = os.environ.get("QA_BASE", "http://127.0.0.1:3219")
 RND = secrets.token_hex(4)
 
 ADMIN_EMAIL = f"qa_admin_{RND}@test.local"
