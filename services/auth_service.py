@@ -16,8 +16,8 @@ Key design notes
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt
 from jose import jwt
-from passlib.context import CryptContext
 
 from constant_var import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -27,34 +27,26 @@ from constant_var import (
 )
 from services.database import get_db
 
-# bcrypt silently truncates at 72 bytes. Newer passlib versions raise
-# ValueError instead of truncating. We opt back to the lenient behaviour AND
-# truncate explicitly so the same password always hashes/verifies identically.
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto",
-    bcrypt__truncate_error=False,
-)
-
 _BCRYPT_MAX_BYTES = 72
 
 
-def _prep(password: str) -> str:
-    """Truncate to 72 UTF-8 bytes before bcrypt so hash == verify always."""
+def _prep_password_bytes(password: str) -> bytes:
+    """Encode and truncate to bcrypt's 72-byte password limit."""
     encoded = password.encode("utf-8")
-    if len(encoded) > _BCRYPT_MAX_BYTES:
-        encoded = encoded[:_BCRYPT_MAX_BYTES]
-    return encoded.decode("utf-8", errors="ignore")
+    return encoded[:_BCRYPT_MAX_BYTES]
 
 
 # ─── Password helpers ────────────────────────────────────────────────────────
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(_prep(password))
+    return bcrypt.hashpw(_prep_password_bytes(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(_prep(plain), hashed)
+    try:
+        return bcrypt.checkpw(_prep_password_bytes(plain), hashed.encode("utf-8"))
+    except (TypeError, ValueError):
+        return False
 
 
 # ─── JWT helpers ─────────────────────────────────────────────────────────────

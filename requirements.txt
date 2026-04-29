@@ -36,7 +36,7 @@ motor>=3.6.0
 
 # --- Authentication (JWT + password hashing) ---
 python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.1,<6.0.0
 
 # --- System (ffmpeg required for video re-encoding) ---
 # apt install ffmpeg  (Linux)
