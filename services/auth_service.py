@@ -27,17 +27,34 @@ from constant_var import (
 )
 from services.database import get_db
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt silently truncates at 72 bytes. Newer passlib versions raise
+# ValueError instead of truncating. We opt back to the lenient behaviour AND
+# truncate explicitly so the same password always hashes/verifies identically.
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__truncate_error=False,
+)
+
+_BCRYPT_MAX_BYTES = 72
+
+
+def _prep(password: str) -> str:
+    """Truncate to 72 UTF-8 bytes before bcrypt so hash == verify always."""
+    encoded = password.encode("utf-8")
+    if len(encoded) > _BCRYPT_MAX_BYTES:
+        encoded = encoded[:_BCRYPT_MAX_BYTES]
+    return encoded.decode("utf-8", errors="ignore")
 
 
 # ─── Password helpers ────────────────────────────────────────────────────────
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return pwd_context.hash(_prep(password))
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return pwd_context.verify(_prep(plain), hashed)
 
 
 # ─── JWT helpers ─────────────────────────────────────────────────────────────
