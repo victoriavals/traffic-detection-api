@@ -18,12 +18,9 @@ Strategy:
 """
 
 import asyncio
-import json
 import os
 import secrets
 import sys
-import time
-from typing import Optional
 
 import httpx
 import websockets
@@ -169,9 +166,23 @@ async def test_branches_phase_a(client: httpx.AsyncClient, admin_tok: str, op_to
     r = await client.post(f"{BASE}/branches", json={"name": "", "address": "x"}, headers=A)
     record("POST empty name -> 422", r.status_code == 422, f"got {r.status_code}")
 
+    # POST whitespace-only name -> 422 (strips to empty; backend must reject)
+    r = await client.post(f"{BASE}/branches", json={"name": "   ", "address": "x"}, headers=A)
+    record("POST whitespace-only name -> 422", r.status_code == 422, f"got {r.status_code}")
+
     # POST too-long name -> 422
     r = await client.post(f"{BASE}/branches", json={"name": "x" * 201, "address": "x"}, headers=A)
     record("POST name >200 chars -> 422", r.status_code == 422, f"got {r.status_code}")
+
+    # POST name with leading/trailing whitespace -> 201, stored trimmed
+    padded_name = f"  qa-padded-{RND}  "
+    r = await client.post(f"{BASE}/branches", json={"name": padded_name, "address": ""}, headers=A)
+    trimmed_name = padded_name.strip()
+    padded_ok = r.status_code == 201 and r.json().get("name") == trimmed_name
+    record("POST name with surrounding spaces -> 201, name stored trimmed",
+           padded_ok, f"got {r.status_code} name={r.json().get('name') if r.status_code == 201 else 'n/a'}")
+    if padded_ok:
+        created_ids.append(r.json()["id"])
 
     # GET specific branch (admin)
     if created_ids:
@@ -208,6 +219,17 @@ async def test_branches_phase_a(client: httpx.AsyncClient, admin_tok: str, op_to
         record("PATCH /branches/{id} as admin -> 200 + updated_by=admin",
                ok, f"got {r.status_code}")
 
+        # PATCH with whitespace-only name -> 422
+        r = await client.patch(f"{BASE}/branches/{bid1}", json={"name": "   "}, headers=A)
+        record("PATCH whitespace-only name -> 422", r.status_code == 422, f"got {r.status_code}")
+
+        # PATCH rename to name of another existing branch -> 409 (requires op branch to exist)
+        if op_ok:
+            r = await client.patch(f"{BASE}/branches/{bid1}", json={"name": op_branch_name}, headers=A)
+            record("PATCH rename to existing branch name -> 409", r.status_code == 409, f"got {r.status_code}")
+        else:
+            record("PATCH rename to existing branch name -> 409", False, "skipped: op branch not created")
+
         # PATCH empty body -> 400
         r = await client.patch(f"{BASE}/branches/{bid1}", json={}, headers=A)
         record("PATCH with empty body -> 400", r.status_code == 400, f"got {r.status_code}")
@@ -243,7 +265,7 @@ async def test_branches_phase_a(client: httpx.AsyncClient, admin_tok: str, op_to
     return created_ids
 
 
-async def test_endpoint_gating_phase_b(client: httpx.AsyncClient, admin_tok: str, op_tok: str) -> None:
+async def test_endpoint_gating_phase_b(client: httpx.AsyncClient, admin_tok: str, _op_tok: str) -> None:
     print("\n=== PHASE B -- HTTP ENDPOINT GATING ===")
     A = {"Authorization": f"Bearer {admin_tok}"}
 
