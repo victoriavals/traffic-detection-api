@@ -59,7 +59,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
-from dependencies.auth import get_current_user
+from dependencies.auth import get_current_user, require_admin
 
 from constant_var import (
     DEFAULT_CONFIDENCE,
@@ -665,7 +665,7 @@ async def list_video_jobs(
 )
 async def delete_video_job(
     job_id: str,
-    _user: dict = Depends(get_current_user),
+    _admin: dict = Depends(require_admin),
 ) -> None:
     """Remove a job from the store and clean up its temp files.
 
