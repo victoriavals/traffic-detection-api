@@ -74,7 +74,12 @@ async def register(payload: UserCreate) -> Token:
 )
 async def login(payload: UserLogin) -> Token:
     user = await get_user_by_email(payload.email)
-    if not user or not verify_password(payload.password, user["password_hash"]):
+    # Generic 401 for invalid creds, missing user, OR disabled — no enumeration
+    if (
+        not user
+        or user.get("status", "active") == "disabled"
+        or not verify_password(payload.password, user["password_hash"])
+    ):
         debug_warning(f"[Auth] Failed login attempt: {payload.email}")
         raise HTTPException(status_code=401, detail="Email atau password salah")
 
@@ -108,7 +113,7 @@ async def refresh(payload: RefreshRequest) -> AccessTokenOnly:
         raise HTTPException(status_code=401, detail="Refresh token payload tidak valid")
 
     user = await get_user_by_email(email)
-    if not user:
+    if not user or user.get("status", "active") == "disabled":
         raise HTTPException(status_code=401, detail="User tidak ditemukan")
 
     return AccessTokenOnly(access_token=create_access_token(user["email"], user["role"]))
