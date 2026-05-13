@@ -476,3 +476,41 @@ class BranchResponse(BaseModel):
     created_by: str = ""
     updated_by: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+# =============================================
+# ADMIN USER MANAGEMENT MODELS
+# =============================================
+
+class UserAdminResponse(BaseModel):
+    """User listing untuk admin — include id + status + last_seen, tetap exclude password."""
+
+    id: str
+    email: str
+    name: str
+    role: Literal["admin", "operator"]
+    status: Literal["active", "disabled"] = "active"
+    created_at: str
+    last_seen_at: Optional[str] = None
+
+
+class RoleUpdate(BaseModel):
+    """Body untuk PATCH /admin/users/{id}/role."""
+
+    role: Literal["admin", "operator"]
+
+
+class StatusUpdate(BaseModel):
+    """Body untuk PATCH /admin/users/{id}/status."""
+
+    status: Literal["active", "disabled"]
+
+
+class ResetPasswordRequest(BaseModel):
+    """Body untuk POST /admin/users/{id}/reset-password.
+
+    Admin set password baru langsung. Operator dapat password baru via
+    channel out-of-band, lalu login ulang.
+    """
+
+    new_password: str = Field(..., min_length=6, max_length=72, description="Password baru (min 6, maks 72 karakter — bcrypt limit)")
