@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
 from constant_var import debug_info
-from dependencies.auth import get_current_user
+from dependencies.auth import get_current_user, require_admin
 from services.database import get_db
 from models.schemas import (
     ActivityLogCreate,
@@ -132,8 +132,8 @@ async def get_logs(
     summary="Clear all activity logs",
     description="Delete all activity log entries from the database.",
 )
-async def clear_logs(_user: dict = Depends(get_current_user)) -> dict:
-    """Clear all activity logs."""
+async def clear_logs(_admin: dict = Depends(require_admin)) -> dict:
+    """Clear all activity logs. Admin only."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -573,9 +573,9 @@ async def get_report_data(
 )
 async def delete_video_detections(
     date: str | None = Query(None, description="Tanggal yang dihapus (YYYY-MM-DD). Kosongkan untuk hapus semua."),
-    _user: dict = Depends(get_current_user),
+    _admin: dict = Depends(require_admin),
 ) -> dict:
-    """Delete hourly_detections data — all or by specific date."""
+    """Delete hourly_detections data — all or by specific date. Admin only."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
