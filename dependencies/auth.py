@@ -15,7 +15,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 
-from services.auth_service import decode_token, get_user_by_email
+from services.auth_service import decode_token, get_user_by_email, maybe_update_last_seen
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
 
@@ -56,6 +56,13 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
+    if user.get("status", "active") == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Akun Anda dinonaktifkan",
+        )
+    # Throttled write — once per 30s per user. Mutates user dict in-place.
+    await maybe_update_last_seen(user)
     return user
 
 
