@@ -91,6 +91,7 @@ async def create_user(email: str, name: str, password: str) -> dict:
         "name": name,
         "password_hash": hash_password(password),
         "role": role,
+        "status": "active",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     result = await db.users.insert_one(doc)
@@ -106,3 +107,40 @@ def user_to_response(user: dict) -> dict:
         "role": user["role"],
         "created_at": user["created_at"],
     }
+
+
+# ─── Last-seen tracking ──────────────────────────────────────────────────────
+
+_LAST_SEEN_THROTTLE_SECONDS = 30
+
+
+async def maybe_update_last_seen(user: dict) -> None:
+    """Throttled update of ``user.last_seen_at``.
+
+    Called from ``get_current_user`` after status check. Updates the field at
+    most once per ``_LAST_SEEN_THROTTLE_SECONDS`` to avoid write spam from
+    polling endpoints (e.g. Dashboard refresh, video-job status). Fire-and-
+    forget — failures are silent. Mutates the in-memory ``user`` dict so
+    callers see the fresh timestamp without re-querying.
+    """
+    db = get_db()
+    if db is None:
+        return
+    now = datetime.now(timezone.utc)
+    last_seen_iso = user.get("last_seen_at")
+    if last_seen_iso:
+        try:
+            last_seen = datetime.fromisoformat(last_seen_iso)
+            if (now - last_seen).total_seconds() < _LAST_SEEN_THROTTLE_SECONDS:
+                return
+        except (ValueError, TypeError):
+            pass  # malformed → treat as stale, update below
+    iso = now.isoformat()
+    try:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"last_seen_at": iso}},
+        )
+        user["last_seen_at"] = iso
+    except Exception:
+        pass  # non-critical; don't break the request
