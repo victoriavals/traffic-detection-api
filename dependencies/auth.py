@@ -74,3 +74,19 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
             detail="Admin access required",
         )
     return user
+
+
+def scope_filter(user: dict) -> dict:
+    """MongoDB filter dict untuk multi-tenant scoping per ``org_id``.
+
+    * Admin → ``{}`` (super user, lihat data semua org).
+    * Operator → ``{"org_id": user["org_id"]}``.
+
+    Pakai dengan spread: ``db.col.find({**scope_filter(user), ...other})``.
+
+    Untuk WRITE (insert/upsert), tetap pakai ``user["org_id"]`` langsung —
+    admin pun menulis ke org sendiri, bukan org user lain.
+    """
+    if user.get("role") == "admin":
+        return {}
+    return {"org_id": user["org_id"]}
