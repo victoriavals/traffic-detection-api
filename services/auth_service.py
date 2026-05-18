@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
+from bson import ObjectId
 from jose import jwt
 
 from constant_var import (
@@ -77,25 +78,72 @@ async def get_user_by_email(email: str) -> Optional[dict]:
     return await db.users.find_one({"email": email.lower()})
 
 
-async def create_user(email: str, name: str, password: str) -> dict:
-    """Insert a new user. First user gets ``admin``, rest get ``operator``."""
+class InviteCodeNotFound(Exception):
+    """Raised saat ``invite_code`` yang diberikan tidak cocok dengan org manapun."""
+
+
+async def create_user(
+    email: str,
+    name: str,
+    password: str,
+    invite_code: Optional[str] = None,
+) -> dict:
+    """Insert a new user. First user gets ``admin``, rest get ``operator``.
+
+    ``invite_code`` opsional:
+
+    * Kalau diisi → lookup org dengan code itu. User join org existing,
+      ``user.org_id`` = ``orgs._id``. Doc ``orgs`` tidak di-touch (sudah ada).
+      Kalau code tidak ketemu → raise :class:`InviteCodeNotFound`.
+    * Kalau kosong → bikin ``orgs`` doc baru dengan generated invite_code,
+      user jadi owner org tsb (``orgs.created_by = user._id``).
+    """
     db = get_db()
     if db is None:
         raise RuntimeError("Database not available")
 
+    # Resolve target org_id berdasarkan invite_code (kalau ada).
+    # Import lokal untuk hindari circular import (org_service → database → ...).
+    from services.org_service import (
+        create_org_for_user,
+        find_org_by_invite_code,
+    )
+
+    target_org_id: Optional[ObjectId] = None
+    if invite_code:
+        org = await find_org_by_invite_code(invite_code)
+        if not org:
+            raise InviteCodeNotFound("Kode undangan tidak ditemukan atau sudah tidak berlaku")
+        target_org_id = org["_id"]
+
     user_count = await db.users.count_documents({})
     role = "admin" if user_count == 0 else "operator"
 
+    # Step 1: pre-generate user_id supaya kita bisa simpan sebagai org owner
+    # ketika user adalah pendiri org baru (tanpa invite_code).
+    user_id = ObjectId()
+
+    # Step 2: tentukan final org_id
+    if target_org_id is None:
+        # Bikin org baru, user jadi owner. Default name "Tim {nama}" supaya
+        # tampilan di /tim langsung punya identitas yang ramah.
+        clean_name = name.strip() or email.split("@")[0]
+        default_org_name = f"Tim {clean_name}"
+        final_org_id = await create_org_for_user(user_id, default_name=default_org_name)
+    else:
+        final_org_id = target_org_id
+
     doc = {
+        "_id": user_id,
         "email": email.lower(),
         "name": name,
         "password_hash": hash_password(password),
         "role": role,
         "status": "active",
+        "org_id": final_org_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    result = await db.users.insert_one(doc)
-    doc["_id"] = result.inserted_id
+    await db.users.insert_one(doc)
     return doc
 
 
