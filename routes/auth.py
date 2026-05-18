@@ -21,6 +21,7 @@ from models.schemas import (
     UserResponse,
 )
 from services.auth_service import (
+    InviteCodeNotFound,
     create_access_token,
     create_refresh_token,
     create_user,
@@ -51,12 +52,21 @@ async def register(payload: UserCreate) -> Token:
     if not name:
         raise HTTPException(status_code=422, detail="Nama tidak boleh kosong atau hanya spasi")
 
+    invite_code: str | None = None
+    if payload.invite_code:
+        invite_code = payload.invite_code.strip().upper()
+        if not invite_code:
+            invite_code = None
+
     try:
-        user = await create_user(payload.email, name, payload.password)
+        user = await create_user(payload.email, name, payload.password, invite_code=invite_code)
+    except InviteCodeNotFound as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except DuplicateKeyError:
         raise HTTPException(status_code=409, detail="Email sudah terdaftar")
 
-    debug_info(f"[Auth] New user registered: {user['email']} (role={user['role']})")
+    join_log = f" (joined org via invite_code)" if invite_code else " (new org)"
+    debug_info(f"[Auth] New user registered: {user['email']} (role={user['role']}){join_log}")
 
     return Token(
         access_token=create_access_token(user["email"], user["role"]),
