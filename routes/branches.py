@@ -23,7 +23,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from constant_var import debug_info
-from dependencies.auth import get_current_user
+from dependencies.auth import get_current_user, scope_filter
 from models.schemas import BranchCreate, BranchResponse, BranchUpdate
 from services.database import get_db
 
@@ -33,6 +33,7 @@ router = APIRouter(tags=["🏢 Branches"])
 def _doc_to_response(doc: dict) -> BranchResponse:
     return BranchResponse(
         id=str(doc["_id"]),
+        org_id=str(doc["org_id"]) if doc.get("org_id") else None,
         name=doc["name"],
         address=doc.get("address", ""),
         created_at=doc.get("created_at", ""),
@@ -55,13 +56,13 @@ def _parse_object_id(branch_id: str) -> ObjectId:
     summary="List semua lokasi",
     description="Mengembalikan semua lokasi terurut alfabet. Butuh autentikasi.",
 )
-async def list_branches(_user: dict = Depends(get_current_user)) -> list[BranchResponse]:
+async def list_branches(user: dict = Depends(get_current_user)) -> list[BranchResponse]:
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
     rows: list[BranchResponse] = []
-    async for doc in db.branches.find({}).sort("name", 1):
+    async for doc in db.branches.find(scope_filter(user)).sort("name", 1):
         rows.append(_doc_to_response(doc))
     return rows
 
@@ -73,13 +74,13 @@ async def list_branches(_user: dict = Depends(get_current_user)) -> list[BranchR
 )
 async def get_branch(
     branch_id: str,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> BranchResponse:
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
-    doc = await db.branches.find_one({"_id": _parse_object_id(branch_id)})
+    doc = await db.branches.find_one({"_id": _parse_object_id(branch_id), **scope_filter(user)})
     if not doc:
         raise HTTPException(status_code=404, detail="Lokasi tidak ditemukan")
     return _doc_to_response(doc)
@@ -105,6 +106,7 @@ async def create_branch(
         raise HTTPException(status_code=422, detail="Nama lokasi tidak boleh kosong atau hanya spasi")
 
     doc = {
+        "org_id": user["org_id"],
         "name": name,
         "address": payload.address.strip(),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -155,7 +157,7 @@ async def update_branch(
     oid = _parse_object_id(branch_id)
     try:
         result = await db.branches.find_one_and_update(
-            {"_id": oid},
+            {"_id": oid, **scope_filter(user)},
             {"$set": update_doc},
             return_document=ReturnDocument.AFTER,
         )
@@ -184,11 +186,12 @@ async def delete_branch(
         raise HTTPException(status_code=503, detail="Database not available")
 
     oid = _parse_object_id(branch_id)
+    scope = scope_filter(user)
     # Fetch first so the audit log captures the (now-gone) name.
-    doc = await db.branches.find_one({"_id": oid})
+    doc = await db.branches.find_one({"_id": oid, **scope})
     if not doc:
         raise HTTPException(status_code=404, detail="Lokasi tidak ditemukan")
 
-    await db.branches.delete_one({"_id": oid})
+    await db.branches.delete_one({"_id": oid, **scope})
     debug_info(f"[Branch] Deleted '{doc.get('name')}' by {user['email']}")
     return None
