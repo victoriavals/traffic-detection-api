@@ -35,6 +35,7 @@ from routes.stats import router as stats_router
 from routes.auth import router as auth_router
 from routes.branches import router as branches_router
 from routes.admin import router as admin_router
+from routes.org import router as org_router
 
 
 @asynccontextmanager
@@ -258,6 +259,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(org_router)
 app.include_router(branches_router)
 app.include_router(image_router)
 app.include_router(video_router)
