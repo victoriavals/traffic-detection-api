@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
 from constant_var import debug_info
-from dependencies.auth import get_current_user, require_admin
+from dependencies.auth import get_current_user, require_admin, scope_filter
 from services.database import get_db
 from models.schemas import (
     ActivityLogCreate,
@@ -45,7 +45,7 @@ router = APIRouter(tags=["📊 Stats & Logs"])
 )
 async def create_log(
     body: ActivityLogCreate,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> ActivityLogResponse:
     """Create a new activity log entry."""
     db = get_db()
@@ -55,6 +55,7 @@ async def create_log(
     now = datetime.now(timezone.utc)
 
     doc = {
+        "org_id": user["org_id"],
         "timestamp": now.isoformat(),
         "type": body.type,
         "source": body.source,
@@ -71,6 +72,7 @@ async def create_log(
 
     return ActivityLogResponse(
         id=str(result.inserted_id),
+        org_id=str(doc["org_id"]),
         timestamp=doc["timestamp"],
         type=doc["type"],
         source=doc["source"],
@@ -92,14 +94,14 @@ async def get_logs(
     offset: int = Query(0, ge=0, description="Number of logs to skip"),
     type: str | None = Query(None, description="Filter by type (Gambar, Video, RTSP, EZVIZ)"),
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> list[ActivityLogResponse]:
     """Get paginated activity logs."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
-    query = {}
+    query: dict = dict(scope_filter(user))
     if type:
         query["type"] = type
     if branch_name:
@@ -115,6 +117,7 @@ async def get_logs(
 
         logs.append(ActivityLogResponse(
             id=str(doc["_id"]),
+            org_id=str(doc["org_id"]) if doc.get("org_id") else None,
             timestamp=doc["timestamp"],
             type=doc["type"],
             source=doc["source"],
@@ -157,7 +160,7 @@ async def clear_logs(_admin: dict = Depends(require_admin)) -> dict:
 async def get_hourly_stats(
     date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today UTC)"),
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> list[HourlyStatItem]:
     """Get hourly aggregated stats for a given date."""
     db = get_db()
@@ -176,6 +179,7 @@ async def get_hourly_stats(
     next_day = target + timedelta(days=1)
 
     match_stage: dict = {
+        **scope_filter(user),
         "created_at": {"$gte": target, "$lt": next_day},
         "counts": {"$ne": None},
     }
@@ -232,14 +236,14 @@ async def get_hourly_stats(
 )
 async def get_summary_stats(
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """Get overall summary of all detection logs."""
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
-    match_stage: dict = {"counts": {"$ne": None}}
+    match_stage: dict = {**scope_filter(user), "counts": {"$ne": None}}
     if branch_name:
         match_stage["branch_name"] = branch_name
 
@@ -332,9 +336,15 @@ def _distribute_counts(
 )
 async def save_video_detection(
     body: VideoDetectionSave,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> dict:
-    """Receive detection results and distribute across hourly buckets."""
+    """Receive detection results and distribute across hourly buckets.
+
+    Multi-tenant: upsert key adalah compound ``(org_id, date, hour, branch_name)``
+    sehingga dua org bisa punya branch ``"Pusat"`` masing-masing tanpa konflik.
+    Doc ``_id`` di-auto-generate sebagai ``ObjectId`` (legacy docs dengan
+    composite string ID dari pre-migration tetap valid).
+    """
     db = get_db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database not available")
@@ -356,14 +366,17 @@ async def save_video_detection(
     buckets = _distribute_counts(counts, recording_start, body.duration_seconds)
     now = datetime.now(timezone.utc)
 
-    branch = body.branch_name or ""
+    branch_value = body.branch_name or None
+    org_id = user["org_id"]
 
     for bucket in buckets:
-        doc_id = f"{bucket['date']}_{bucket['hour']:02d}"
-        if branch:
-            doc_id = f"{doc_id}_{branch}"
         await db.hourly_detections.update_one(
-            {"_id": doc_id},
+            {
+                "org_id": org_id,
+                "date": bucket["date"],
+                "hour": bucket["hour"],
+                "branch_name": branch_value,
+            },
             {
                 "$inc": {
                     "big_vehicle": bucket["big_vehicle"],
@@ -371,18 +384,19 @@ async def save_video_detection(
                     "pedestrian": bucket["pedestrian"],
                     "two_wheeler": bucket["two_wheeler"],
                 },
-                "$set": {
+                "$set": {"updated_at": now},
+                "$setOnInsert": {
+                    "org_id": org_id,
                     "date": bucket["date"],
                     "hour": bucket["hour"],
-                    "branch_name": branch or None,
-                    "updated_at": now,
+                    "branch_name": branch_value,
+                    "created_at": now,
                 },
-                "$setOnInsert": {"created_at": now},
             },
             upsert=True,
         )
 
-    loc = f" [{branch}]" if branch else ""
+    loc = f" [{branch_value}]" if branch_value else ""
     debug_info(f"[Stats] Saved {len(buckets)} hourly bucket(s) for recording at {body.recording_start}{loc}")
     return {"success": True, "buckets_saved": len(buckets)}
 
@@ -396,7 +410,7 @@ async def save_video_detection(
 async def get_hourly_detections(
     date: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today UTC)"),
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> list[HourlyStatItem]:
     """Get hourly chart data from hourly_detections collection."""
     db = get_db()
@@ -412,7 +426,7 @@ async def get_hourly_detections(
     else:
         target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    query: dict = {"date": target_date}
+    query: dict = {**scope_filter(user), "date": target_date}
     if branch_name:
         query["branch_name"] = branch_name
 
@@ -447,7 +461,7 @@ async def get_hourly_detections(
 )
 async def get_weekly_detections(
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> list[WeeklyStatItem]:
     """Get per-day totals for current week from hourly_detections collection."""
     db = get_db()
@@ -459,12 +473,13 @@ async def get_weekly_detections(
 
     day_labels = ["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"]
     results = []
+    scope = scope_filter(user)
 
     for i in range(7):
         day_date = monday + timedelta(days=i)
         date_str = day_date.strftime("%Y-%m-%d")
 
-        match_stage: dict = {"date": date_str}
+        match_stage: dict = {**scope, "date": date_str}
         if branch_name:
             match_stage["branch_name"] = branch_name
 
@@ -525,7 +540,7 @@ async def get_report_data(
     hour_from: int = Query(0, ge=0, le=23, description="Start hour (inclusive, 0–23)"),
     hour_to: int = Query(23, ge=0, le=23, description="End hour (inclusive, 0–23)"),
     branch_name: str | None = Query(None, description="Filter by branch/location name"),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> list[ReportRow]:
     """Fetch raw hourly_detections rows for the given filters."""
     db = get_db()
@@ -542,6 +557,7 @@ async def get_report_data(
         raise HTTPException(status_code=400, detail="date_from must be <= date_to.")
 
     query: dict = {
+        **scope_filter(user),
         "date": {"$gte": date_from, "$lte": date_to},
         "hour": {"$gte": hour_from, "$lte": hour_to},
     }
