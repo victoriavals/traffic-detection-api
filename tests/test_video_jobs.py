@@ -239,6 +239,11 @@ class TestRecoverInterruptedJobs:
 # GET /video/jobs/{id} — memory-first, MongoDB fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Admin user untuk test multi-tenant route — scope_filter(admin) → {} sehingga
+# query assertions tetap kompatibel dengan pre-multitenant tests.
+_ADMIN_USER: dict = {"role": "admin", "org_id": "test-org-admin", "_id": "test-admin-id"}
+
+
 @pytest.mark.asyncio
 class TestGetVideoJob:
     """Tests for get_video_job() endpoint — dual-store lookup."""
@@ -250,7 +255,7 @@ class TestGetVideoJob:
         with patch.dict(vj._jobs, {"mem_job_001": job}), \
              patch("routes.video_jobs.get_db", return_value=mock_db):
             from routes.video_jobs import get_video_job
-            result = await get_video_job("mem_job_001")
+            result = await get_video_job("mem_job_001", user=_ADMIN_USER)
 
         assert result.job_id == "mem_job_001"
         assert result.status == "processing"
@@ -273,12 +278,13 @@ class TestGetVideoJob:
         with patch.dict(vj._jobs, {}, clear=True), \
              patch("routes.video_jobs.get_db", return_value=mock_db):
             from routes.video_jobs import get_video_job
-            result = await get_video_job("db_job_002")
+            result = await get_video_job("db_job_002", user=_ADMIN_USER)
 
         assert result.job_id == "db_job_002"
         assert result.status == "done"
         assert result.counts is not None
         assert result.counts.total == 8
+        # Admin → scope_filter returns {} → query is plain `{"_id": ...}`.
         mock_db.video_jobs.find_one.assert_called_once_with({"_id": "db_job_002"})
 
     async def test_raises_404_when_not_in_memory_or_db(self, mock_db):
@@ -290,7 +296,7 @@ class TestGetVideoJob:
             from routes.video_jobs import get_video_job
             from fastapi import HTTPException
             with pytest.raises(HTTPException) as exc_info:
-                await get_video_job("missing_job")
+                await get_video_job("missing_job", user=_ADMIN_USER)
 
         assert exc_info.value.status_code == 404
 
@@ -301,9 +307,27 @@ class TestGetVideoJob:
             from routes.video_jobs import get_video_job
             from fastapi import HTTPException
             with pytest.raises(HTTPException) as exc_info:
-                await get_video_job("any_job_id")
+                await get_video_job("any_job_id", user=_ADMIN_USER)
 
         assert exc_info.value.status_code == 404
+
+    async def test_operator_cannot_see_other_org_job_in_memory(self, mock_db):
+        """Multi-tenant guard: operator dapat 404 untuk job di-memory milik org lain."""
+        # Job ada di memory tapi org_id berbeda dari operator
+        job = _Job(job_id="cross_org_job", org_id="org-A", status="processing")
+
+        operator_user: dict = {"role": "operator", "org_id": "org-B", "_id": "op-id"}
+
+        with patch.dict(vj._jobs, {"cross_org_job": job}), \
+             patch("routes.video_jobs.get_db", return_value=mock_db):
+            from routes.video_jobs import get_video_job
+            from fastapi import HTTPException
+            with pytest.raises(HTTPException) as exc_info:
+                await get_video_job("cross_org_job", user=operator_user)
+
+        assert exc_info.value.status_code == 404
+        # In-memory ownership miss → MongoDB tidak boleh di-query
+        mock_db.video_jobs.find_one.assert_not_called()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
