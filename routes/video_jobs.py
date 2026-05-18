@@ -59,7 +59,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
-from dependencies.auth import get_current_user, require_admin
+from dependencies.auth import get_current_user, require_admin, scope_filter
 
 from constant_var import (
     DEFAULT_CONFIDENCE,
@@ -103,6 +103,7 @@ def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
 class _Job:
     """Internal mutable job state (not serialized directly)."""
     job_id: str
+    org_id: str = ""
     video_url: str = ""
     status: Literal["pending", "downloading", "processing", "done", "error"] = "pending"
     progress: float = 0.0
@@ -527,7 +528,7 @@ Kirim URL video publik untuk diproses secara asinkron (background job).
 )
 async def create_video_job(
     request: VideoJobRequest,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> VideoJobStatus:
     """Create and start a background video processing job from a public URL."""
     # Evict oldest jobs if store is full
@@ -544,7 +545,8 @@ async def create_video_job(
             debug_warning(f"[JOBS] Memory store full (max={_MAX_JOBS}) — evicted oldest job: {oldest_id[:8]}")
 
     job_id: str = uuid.uuid4().hex
-    job = _Job(job_id=job_id, video_url=request.url)
+    org_id = user["org_id"]
+    job = _Job(job_id=job_id, org_id=str(org_id), video_url=request.url)
 
     with _jobs_lock:
         _jobs[job_id] = job
@@ -554,6 +556,7 @@ async def create_video_job(
     if db is not None:
         await db.video_jobs.insert_one({
             "_id": job_id,
+            "org_id": org_id,
             "video_url": request.url,
             "status": "pending",
             "progress": 0.0,
@@ -582,12 +585,14 @@ async def create_video_job(
 )
 async def get_video_job(
     job_id: str,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> VideoJobStatus:
     """Poll a video job for its current status and result.
 
     Checks in-memory store first (fast path), then falls back to MongoDB
     (handles server restarts where job result was persisted but memory was cleared).
+    Multi-tenant: operator hanya bisa akses job di org-nya; admin bisa akses
+    semua. Out-of-scope job dianggap 404 (hindari leak ID existence).
 
     Args:
         job_id: Job ID returned by POST /video/jobs.
@@ -595,20 +600,27 @@ async def get_video_job(
     Returns:
         Current job status and result (if done).
     """
+    is_admin = user.get("role") == "admin"
+    user_org_id = str(user["org_id"])
+
     # Fast path: in-memory store
     with _jobs_lock:
         job = _jobs.get(job_id)
     if job is not None:
-        return _job_to_status(job)
+        if is_admin or job.org_id == user_org_id:
+            return _job_to_status(job)
+        # In-scope-miss: treat as 404 to avoid leaking job existence
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' tidak ditemukan")
 
     # Fallback: MongoDB (job completed before server restart, or evicted from memory)
     db = get_db()
     if db is not None:
-        doc = await db.video_jobs.find_one({"_id": job_id})
+        doc = await db.video_jobs.find_one({"_id": job_id, **scope_filter(user)})
         if doc is not None:
             counts = ClassCount(**doc["counts"]) if doc.get("counts") else None
             return VideoJobStatus(
                 job_id=doc["_id"],
+                org_id=str(doc["org_id"]) if doc.get("org_id") else None,
                 status=doc["status"],
                 progress=doc.get("progress", 0.0),
                 message=doc.get("message", ""),
@@ -627,25 +639,40 @@ async def get_video_job(
     summary="List all video jobs",
 )
 async def list_video_jobs(
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ) -> list[VideoJobStatus]:
-    """Return all jobs (memory + MongoDB), newest first, deduplicated."""
+    """Return all jobs (memory + MongoDB), newest first, deduplicated.
+
+    Multi-tenant: operator hanya melihat job di org-nya; admin melihat semua.
+    """
+    is_admin = user.get("role") == "admin"
+    user_org_id = str(user["org_id"])
+
     with _jobs_lock:
-        memory_statuses = {j.job_id: _job_to_status(j) for j in _jobs.values()}
+        memory_statuses = {
+            j.job_id: _job_to_status(j)
+            for j in _jobs.values()
+            if is_admin or j.org_id == user_org_id
+        }
 
     results: dict[str, VideoJobStatus] = dict(memory_statuses)
 
     # Merge MongoDB jobs (historical — not in memory)
     db = get_db()
     if db is not None:
+        mongo_query: dict = {
+            **scope_filter(user),
+            "_id": {"$nin": list(results.keys())},
+        }
         async for doc in db.video_jobs.find(
-            {"_id": {"$nin": list(results.keys())}},
+            mongo_query,
             sort=[("created_at", -1)],
             limit=200,
         ):
             counts = ClassCount(**doc["counts"]) if doc.get("counts") else None
             results[doc["_id"]] = VideoJobStatus(
                 job_id=doc["_id"],
+                org_id=str(doc["org_id"]) if doc.get("org_id") else None,
                 status=doc["status"],
                 progress=doc.get("progress", 0.0),
                 message=doc.get("message", ""),
@@ -851,6 +878,7 @@ def _job_to_status(job: _Job) -> VideoJobStatus:
     with _jobs_lock:
         return VideoJobStatus(
             job_id=job.job_id,
+            org_id=job.org_id or None,
             status=job.status,
             progress=job.progress,
             message=job.message,
