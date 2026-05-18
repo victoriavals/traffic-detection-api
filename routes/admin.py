@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from constant_var import debug_info, debug_warning
 from dependencies.auth import require_admin
 from models.schemas import (
+    OrgAssignRequest,
     ResetPasswordRequest,
     RoleUpdate,
     StatusUpdate,
@@ -37,6 +38,7 @@ from models.schemas import (
 )
 from services.auth_service import hash_password
 from services.database import get_db
+from services.org_service import get_org
 
 router = APIRouter(prefix="/admin", tags=["🛡️ Admin"])
 
@@ -47,6 +49,7 @@ def _doc_to_response(doc: dict) -> UserAdminResponse:
     """Map MongoDB user document to ``UserAdminResponse`` (no ``password_hash``)."""
     return UserAdminResponse(
         id=str(doc["_id"]),
+        org_id=str(doc["org_id"]) if doc.get("org_id") else None,
         email=doc["email"],
         name=doc["name"],
         role=doc.get("role", "operator"),
@@ -221,3 +224,51 @@ async def delete_user(
     await db.users.delete_one({"_id": oid})
     debug_warning(f"[Admin] {admin['email']} deleted user {target['email']}")
     return None
+
+
+@router.patch(
+    "/users/{user_id}/org",
+    response_model=UserAdminResponse,
+    summary="Pindah user ke org lain (admin only)",
+    description=(
+        "Pindahkan user ke org tertentu. Data domain milik user (branches/logs/"
+        "detections/jobs) TIDAK ikut pindah — tetap ter-tag di org lama. "
+        "User mulai dengan data kosong di org baru. Self-action di-block."
+    ),
+)
+async def update_user_org(
+    user_id: str,
+    body: OrgAssignRequest,
+    admin: dict = Depends(require_admin),
+) -> UserAdminResponse:
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database tidak tersedia")
+
+    oid, target = await _ensure_target_exists_and_not_self(db, user_id, admin)
+
+    # Parse target org_id
+    try:
+        target_org_id = ObjectId(body.org_id)
+    except (InvalidId, TypeError):
+        raise HTTPException(status_code=400, detail="org_id tidak valid")
+
+    # Validate target org exists
+    org = await get_org(target_org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org tujuan tidak ditemukan")
+
+    # Same-org no-op
+    if target.get("org_id") == target_org_id:
+        return _doc_to_response(target)
+
+    # Last-admin guard: kalau target adalah admin aktif satu-satunya di org-nya,
+    # mindah dia ke org lain bisa bikin org lama tanpa admin. Reuse helper.
+    await _ensure_not_last_active_admin(db, oid, target)
+
+    await db.users.update_one({"_id": oid}, {"$set": {"org_id": target_org_id}})
+    updated = await db.users.find_one({"_id": oid})
+    debug_warning(
+        f"[Admin] {admin['email']} moved {target['email']} → org {target_org_id}"
+    )
+    return _doc_to_response(updated)
