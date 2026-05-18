@@ -217,6 +217,7 @@ class VideoJobStatus(BaseModel):
 
     Attributes:
         job_id: Unique job identifier.
+        org_id: Scope tenancy (multi-tenant). Optional untuk dokumen pre-migration.
         status: Status saat ini ('pending', 'downloading', 'processing', 'done', 'error').
         progress: Persentase penyelesaian (0-100).
         message: Pesan status terbaru.
@@ -227,6 +228,7 @@ class VideoJobStatus(BaseModel):
     """
 
     job_id: str
+    org_id: Optional[str] = None
     status: Literal["pending", "downloading", "processing", "done", "error"]
     progress: float = Field(0.0, ge=0.0, le=100.0)
     message: str = ""
@@ -311,6 +313,7 @@ class ActivityLogResponse(BaseModel):
 
     Attributes:
         id: Unique identifier log.
+        org_id: Scope tenancy (multi-tenant). Optional untuk dokumen pre-migration.
         timestamp: Waktu log dibuat (ISO 8601).
         type: Tipe deteksi.
         source: Nama file atau URL sumber.
@@ -321,6 +324,7 @@ class ActivityLogResponse(BaseModel):
     """
 
     id: str
+    org_id: Optional[str] = None
     timestamp: str
     type: str
     source: str
@@ -397,11 +401,20 @@ class WeeklyStatItem(BaseModel):
 # =============================================
 
 class UserCreate(BaseModel):
-    """Request body untuk pendaftaran user baru."""
+    """Request body untuk pendaftaran user baru.
+
+    ``invite_code`` opsional. Kalau diisi, user join org existing pemilik
+    kode tsb. Kalau kosong, user dapat org baru sendiri (perilaku default).
+    """
 
     email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=200, description="Email user (unik)")
     name: str = Field(..., min_length=1, max_length=100, description="Nama lengkap user")
     password: str = Field(..., min_length=6, max_length=72, description="Password (min 6, maks 72 karakter — bcrypt limit)")
+    invite_code: Optional[str] = Field(
+        None,
+        max_length=32,
+        description="Kode undangan org (opsional). Kosongkan untuk bikin org baru sendiri.",
+    )
 
 
 class UserLogin(BaseModel):
@@ -467,9 +480,15 @@ class BranchResponse(BaseModel):
     - ``created_by``: email user yang membuat record (selalu ada)
     - ``updated_by`` / ``updated_at``: terisi setelah PATCH pertama, None
       untuk record yang belum pernah diubah
+
+    Multi-tenant:
+    - ``org_id``: scope tenancy. Hanya user dengan ``org_id`` sama (atau
+      admin super user) yang bisa lihat record ini. Optional untuk
+      backward-compat dengan dokumen pre-migration.
     """
 
     id: str
+    org_id: Optional[str] = None
     name: str
     address: str
     created_at: str
@@ -483,9 +502,14 @@ class BranchResponse(BaseModel):
 # =============================================
 
 class UserAdminResponse(BaseModel):
-    """User listing untuk admin — include id + status + last_seen, tetap exclude password."""
+    """User listing untuk admin — include id + status + last_seen + org, tetap exclude password.
+
+    ``org_id`` ditampilkan ke admin untuk membedakan user-user yang ada di
+    org yang sama (legacy team) versus user baru (tiap-akun-baru = org baru).
+    """
 
     id: str
+    org_id: Optional[str] = None
     email: str
     name: str
     role: Literal["admin", "operator"]
@@ -514,3 +538,70 @@ class ResetPasswordRequest(BaseModel):
     """
 
     new_password: str = Field(..., min_length=6, max_length=72, description="Password baru (min 6, maks 72 karakter — bcrypt limit)")
+
+
+# =============================================
+# ORG / TEAM MODELS
+# =============================================
+
+class OrgMemberSummary(BaseModel):
+    """User di dalam org (subset minimal untuk halaman /tim)."""
+
+    id: str
+    email: str
+    name: str
+    role: Literal["admin", "operator"]
+    is_owner: bool = False
+
+
+class OrgInfoResponse(BaseModel):
+    """Response untuk ``GET /org/me`` — info org user yang sedang login."""
+
+    org_id: str
+    name: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_id: Optional[str] = None
+    invite_code: Optional[str] = None
+    member_count: int = 0
+    members: list[OrgMemberSummary] = []
+    is_owner: bool = False
+    created_at: Optional[str] = None
+
+
+class OrgRotateCodeResponse(BaseModel):
+    """Response setelah rotate kode undangan."""
+
+    org_id: str
+    invite_code: str
+
+
+class OrgAssignRequest(BaseModel):
+    """Body untuk ``PATCH /admin/users/{id}/org`` — admin assign user ke org."""
+
+    org_id: str = Field(..., min_length=1, max_length=64, description="Target org_id (ObjectId string)")
+
+
+class OrgJoinRequest(BaseModel):
+    """Body untuk ``POST /org/join`` — user existing self-service join org lain via kode."""
+
+    invite_code: str = Field(..., min_length=1, max_length=32, description="Kode undangan org tujuan")
+
+
+class OrgSummary(BaseModel):
+    """Ringkasan org untuk admin dropdown — daftar semua org existing."""
+
+    org_id: str
+    name: Optional[str] = None
+    owner_email: Optional[str] = None
+    member_count: int = 0
+    invite_code: Optional[str] = None
+
+
+class OrgNameUpdate(BaseModel):
+    """Body untuk ``PATCH /org`` — owner/admin rename org.
+
+    Trim whitespace. Reject empty. Max length 60 (cukup untuk nama tim apapun).
+    Tidak ada uniqueness constraint — dua tim boleh nama sama.
+    """
+
+    name: str = Field(..., min_length=1, max_length=60, description="Nama tim/org baru")
