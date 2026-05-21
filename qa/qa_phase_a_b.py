@@ -3,7 +3,7 @@ QA End-to-End Test -- Phase A (Branch CRUD) + Phase B (Endpoint Gating).
 
 Run after backend is up at http://127.0.0.1:3219.
 
-    python tests/qa_phase_a_b.py
+    uv run python qa/qa_phase_a_b.py
 
 Strategy:
 - Use unique test emails (qa_admin_<rnd>@test.local, qa_op_<rnd>@test.local) so
