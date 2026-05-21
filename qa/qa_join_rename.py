@@ -6,7 +6,7 @@ QA Engineer test pack untuk 2 fitur terbaru:
 - Migration backfill name — legacy orgs
 
 Coverage: Functional, Validation, Negative, Edge case, Security.
-Run: uv run python scripts/qa_join_rename.py
+Run: uv run python qa/qa_join_rename.py
 """
 from __future__ import annotations
 import asyncio
