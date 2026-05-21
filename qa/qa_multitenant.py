@@ -3,7 +3,7 @@ QA test script untuk fitur multi-tenant + invite code + admin assign.
 Idempotent — bersihkan dirinya sendiri. Dijalankan oleh QA Engineer
 untuk validasi end-to-end sebelum deploy ke production.
 
-Run: uv run python scripts/qa_multitenant.py
+Run: uv run python qa/qa_multitenant.py
 """
 from __future__ import annotations
 import asyncio
