@@ -9,7 +9,7 @@ Comprehensive test of register & login features:
 
 Run after backend is up. Set BASE env to override default URL.
 
-    python tests/qa_auth.py
+    uv run python qa/qa_auth.py
 
 Each test prints PASS/FAIL. Exit code = number of failed tests.
 """
