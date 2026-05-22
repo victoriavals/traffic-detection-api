@@ -44,3 +44,8 @@ data/
 .env
 .env.*
 !.env.example
+
+# QA generated artifacts (keep scripts + README, ignore outputs)
+qa/node_modules/
+qa/screenshots/
+qa/mobile-test-report.json
