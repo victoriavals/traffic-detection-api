@@ -8,6 +8,7 @@ Endpoints:
 """
 
 import io
+from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
@@ -42,6 +43,13 @@ router = APIRouter(prefix="/image", tags=["🖼️ Image Detection"])
 # Service instances
 detector: DetectorService = DetectorService()
 annotator: AnnotationService = AnnotationService()
+
+# Public demo endpoint config — server-side curated example whitelist.
+# Files live in `static/demo/` and are referenced by id (without .png ext).
+# This isolates the public demo from the protected /detect /annotate endpoints
+# so we don't expose general inference without auth.
+_DEMO_DIR: Path = Path(__file__).resolve().parent.parent / "static" / "demo"
+_DEMO_WHITELIST: set[str] = {"cctv-good-1", "cctv-good-2"}
 
 
 async def _read_image(file: UploadFile) -> np.ndarray:
@@ -288,3 +296,94 @@ async def annotate_image(
     except Exception as e:
         debug_error(f"[IMAGE/ANNOTATE] Error: {e}")
         raise HTTPException(status_code=500, detail="Gagal memproses gambar. Coba gunakan gambar lain.")
+
+
+@router.post(
+    "/demo",
+    summary="Run detection on a curated demo image (public, no auth)",
+    description="""
+Endpoint demo publik untuk halaman panduan CCTV (`/panduan-cctv`).
+**Tidak memerlukan autentikasi.**
+
+Hanya menerima `example_id` dari whitelist yang dikurasi di server-side
+untuk mencegah penyalahgunaan inference endpoint:
+- `cctv-good-1`
+- `cctv-good-2`
+
+File contoh disimpan di `traffic-detection-api/static/demo/{example_id}.png`.
+Konfigurasi inference pakai default (`DEFAULT_CONFIDENCE`, `DEFAULT_IOU`,
+`DEFAULT_MODEL_SIZE`).
+
+**Content-Type response:** `image/jpeg` dengan header `X-Detections-Count`.
+    """,
+    responses={
+        200: {"content": {"image/jpeg": {}}, "description": "Annotated demo image"},
+        400: {"description": "Unknown example_id"},
+        503: {"description": "Demo file missing on server"},
+    },
+)
+async def demo_image(
+    example_id: str = Query(
+        ...,
+        description="Demo example id (must be in server-side whitelist)",
+    ),
+) -> StreamingResponse:
+    """Run YOLO detection on a server-side demo image (public access)."""
+    if example_id not in _DEMO_WHITELIST:
+        raise HTTPException(
+            status_code=400,
+            detail="Demo tidak tersedia untuk contoh ini.",
+        )
+
+    file_path: Path = _DEMO_DIR / f"{example_id}.png"
+    if not file_path.is_file():
+        debug_error(f"[IMAGE/DEMO] Missing demo file: {file_path}")
+        raise HTTPException(
+            status_code=503,
+            detail="File contoh tidak tersedia di server.",
+        )
+
+    try:
+        image: np.ndarray | None = cv2.imread(str(file_path))
+        if image is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Gagal memuat file contoh.",
+            )
+
+        debug_info(f"[IMAGE/DEMO] Processing: {example_id} ({image.shape[1]}x{image.shape[0]})")
+
+        detections = detector.detect(
+            image, DEFAULT_CONFIDENCE, DEFAULT_IOU, DEFAULT_MODEL_SIZE
+        )
+        detections = filter_pedestrian_on_vehicle(detections)
+
+        annotated: np.ndarray = annotator.annotate_detections(
+            image, detections, show_tracker_id=False
+        )
+
+        success: bool
+        buffer: np.ndarray
+        success, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 90])
+
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to encode demo image")
+
+        debug_info(f"[IMAGE/DEMO] Done: {len(detections)} objects in {example_id}")
+
+        return StreamingResponse(
+            io.BytesIO(buffer.tobytes()),
+            media_type="image/jpeg",
+            headers={
+                "X-Detections-Count": str(len(detections)),
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        debug_error(f"[IMAGE/DEMO] Error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Gagal memproses gambar contoh.",
+        )
