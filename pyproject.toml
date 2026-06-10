@@ -1,6 +1,6 @@
 [project]
 name = "traffic-detection-api"
-version = "0.1.0"
+version = "0.2.0"
 description = "FastAPI backend for Traffic Pulse — vehicle detection (YOLOv11 + ByteTrack + supervision)"
 requires-python = ">=3.11"
 dependencies = [
